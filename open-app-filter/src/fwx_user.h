@@ -6,6 +6,7 @@
 #include <libubox/list.h>
 #ifndef __FILTER_USER_H__
 #define __FILTER_USER_H__
+#include <sqlite3.h>
 #define MAX_IP_LEN 32
 #define MAX_MAC_LEN 32
 
@@ -216,6 +217,7 @@ daily_top_apps_stat_t *get_today_top_apps_stat(client_node_t *client);
 daily_top_apps_stat_t *load_history_top_apps_stat_from_file(client_node_t *client, u_int32_t date);
 void save_daily_top_apps_stats_to_file(client_node_t *client, u_int32_t date);
 void save_client_visit_data_to_file(client_node_t *client, u_int32_t date);
+int open_client_visit_db(sqlite3 **db);
 void init_client_visit_db(void);
 int add_mock_visit_records_to_db(int record_count, int mac_count, unsigned long long *old_size_bytes, unsigned long long *new_size_bytes);
 const char *get_client_data_root_dir(void);

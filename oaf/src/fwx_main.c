@@ -1094,8 +1094,9 @@ void af_init_feature(char *feature_str)
 	char app_name[128] = {0};
 	char *feature_buf = NULL;
 	char feature[MAX_FEATURE_STR_LEN] = {0};
-	char *p = feature_str;
-	char *pos = NULL;
+    char *p = feature_str;
+    char *pos = NULL;
+    int bracket_depth = 0;
 	int len = 0;
 	char *begin = NULL;
 
@@ -1111,21 +1112,35 @@ void af_init_feature(char *feature_str)
 
 	if (af_parse_feature_app_header(feature_str, &app_id, app_name, sizeof(app_name)) < 0)
 		goto out;
+	/* The first '[' opens the feature list. Later brackets belong to the
+	 * feature expression itself, e.g. the regex class in "[*]*$". */
 	while (*p++)
 	{
 		if (*p == '[')
 		{
-			pos = p + 1;
+			if (pos == NULL)
+			{
+				pos = p + 1;
+				bracket_depth = 1;
+			}
+			else
+				bracket_depth++;
 			continue;
 		}
-		if (*p == ']' && pos != NULL)
+		if (*p == ']' && bracket_depth > 0)
 		{
-			len = p - pos;
+			bracket_depth--;
+			if (bracket_depth == 0)
+			{
+				len = p - pos;
+				break;
+			}
 		}
 	}
+	if (!pos || bracket_depth != 0 || len <= 0)
+		goto out;
 
-	if (pos && len)
-		strncpy(feature_buf, pos, len);
+	strncpy(feature_buf, pos, len);
 	p = feature_buf;
 	begin = feature_buf;
 

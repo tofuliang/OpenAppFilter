@@ -6,23 +6,193 @@
 <script type="text/javascript" src="<%=resource%>/oaf/echarts.min.js?v=5.0"></script>
 
 	<script type="text/javascript">//<![CDATA[
-		const FWX_ECHART_RENDERER = 'svg';
-		let visit_time_data = []; // Use mock data for chart display
-		let user_list_data = {
-			total_num: 0,
-			list: [
-				
-			]
-		}
-		let cur_page = 1;
-		let page_size = 15;
-		let total_num = 0;
-		let total_page = 1;
-		let app_class_name_map = {};
-		let app_class_map_loaded = false;
-		let user_session_enable = false;
-		let user_rssi_enable = false;
-		let view_mode = 'list';
+        const FWX_ECHART_RENDERER = 'svg';
+        let visit_time_data = [];
+        const user_batch_size = 15;
+        let user_snapshot = [];
+        let user_display_count = 0;
+        let user_loaded_batches = 1;
+        const user_nodes_by_mac = new Map();
+        let user_request_in_flight = false;
+        let user_request_serial = 0;
+        let user_poll_timer = null;
+        let user_manual_refresh_pending = false;
+        let user_blacklist_refresh_pending = false;
+        let user_batch_frame = null;
+        let user_card_columns = 0;
+        let app_class_name_map = {};
+        let app_class_map_loaded = false;
+        let user_session_enable = false;
+        let user_rssi_enable = false;
+        let view_mode = 'list';
+
+        function user_page_is_visible() {
+            return !document.hidden;
+        }
+
+        function schedule_user_poll(delay) {
+            if (user_poll_timer !== null) {
+                clearTimeout(user_poll_timer);
+                user_poll_timer = null;
+            }
+            if (!user_page_is_visible()) return;
+            user_poll_timer = setTimeout(() => {
+                user_poll_timer = null;
+                request_user_data(false);
+            }, typeof delay === 'number' ? delay : 3000);
+        }
+
+        function normalize_user_payload(data) {
+            const payload = data?.data || data;
+            if (!payload || (payload.code !== undefined && Number(payload.code) !== 2000) || !Array.isArray(payload.list)) return null;
+            return {total_num: parseInt(payload.total_num, 10) || 0, list: payload.list};
+        }
+
+        function show_user_load_error() {
+            $('#user_status_error').show();
+            if (user_snapshot.length === 0) $('#user_status_loading_row').hide();
+        }
+
+        function user_mac(item) {
+            return String(item?.mac || '').trim();
+        }
+
+        function reset_user_dom() {
+            const $tb = $('#user_status_table');
+            const $cards = $('#user_status_cards');
+            $tb.find('tr.user-data-row').remove();
+            $cards.empty();
+            user_nodes_by_mac.clear();
+            user_card_columns = 0;
+            $('#user_status_loading_row').show();
+        }
+
+        function merge_user_snapshot(payload, resetSnapshot) {
+            const incomingByMac = new Map();
+            payload.list.forEach(item => {
+                const mac = user_mac(item);
+                if (mac) incomingByMac.set(mac, item);
+            });
+            if (resetSnapshot) {
+                user_snapshot = [...payload.list];
+                user_loaded_batches = 1;
+                user_display_count = Math.min(user_batch_size, user_snapshot.length);
+                reset_user_dom();
+                return;
+            }
+            // Polling refreshes known devices in place; Refresh starts a new membership/order snapshot.
+            user_snapshot = user_snapshot.map(item => incomingByMac.get(user_mac(item)) || item);
+        }
+
+        function finish_user_request(requestSerial) {
+            if (requestSerial !== user_request_serial) return;
+            user_request_in_flight = false;
+            if (user_manual_refresh_pending) {
+                user_manual_refresh_pending = false;
+                user_blacklist_refresh_pending = false;
+                request_user_data(true);
+            } else if (user_blacklist_refresh_pending) {
+                user_blacklist_refresh_pending = false;
+                request_user_data(false);
+            } else {
+                schedule_user_poll(3000);
+            }
+        }
+
+        function request_user_data(resetSnapshot) {
+            resetSnapshot = !!resetSnapshot;
+            if (user_request_in_flight) {
+                if (resetSnapshot) user_manual_refresh_pending = true;
+                return;
+            }
+            if (!resetSnapshot && !user_page_is_visible()) return;
+            user_request_in_flight = true;
+            const requestSerial = ++user_request_serial;
+            $.ajax({
+                url: "<%=url('admin/services/oaf/api/get_all_users')%>",
+                data: {flag: 3},
+                dataType: 'json',
+                timeout: 10000
+            }).done(data => {
+                if (requestSerial !== user_request_serial) return;
+                const payload = normalize_user_payload(data);
+                if (!payload) {
+                    show_user_load_error();
+                    return;
+                }
+                $('#user_status_error').hide();
+                merge_user_snapshot(payload, resetSnapshot);
+                render_user_list({list: user_snapshot.slice(0, user_display_count)}, !resetSnapshot);
+            }).fail(() => {
+                if (requestSerial === user_request_serial) show_user_load_error();
+            }).always(() => {
+                finish_user_request(requestSerial);
+            });
+        }
+
+        function show_next_user_batch() {
+            if (user_display_count >= user_snapshot.length) return;
+            user_loaded_batches++;
+            user_display_count = Math.min(user_loaded_batches * user_batch_size, user_snapshot.length);
+            render_user_list({list: user_snapshot.slice(0, user_display_count)});
+        }
+
+        function queue_visible_user_batch() {
+            if (user_batch_frame !== null || !user_page_is_visible() || user_display_count >= user_snapshot.length) return;
+            user_batch_frame = requestAnimationFrame(() => {
+                user_batch_frame = null;
+                if (!user_page_is_visible() || user_display_count >= user_snapshot.length) return;
+                const sentinel = document.getElementById('user_status_scroll_sentinel');
+                if (!sentinel) return;
+                const rect = sentinel.getBoundingClientRect();
+                if (rect.bottom >= 0 && rect.top <= (window.innerHeight || document.documentElement.clientHeight) + 160) {
+                    show_next_user_batch();
+                }
+            });
+        }
+
+        function bind_user_scroll_events() {
+            const sentinel = document.getElementById('user_status_scroll_sentinel');
+            if (sentinel && window.IntersectionObserver) {
+                const observer = new IntersectionObserver(entries => {
+                    if (entries.some(entry => entry.isIntersecting)) queue_visible_user_batch();
+                }, {root: null, rootMargin: '0px 0px 160px 0px'});
+                observer.observe(sentinel);
+            } else {
+                $(window).on('scroll.userStatus', queue_visible_user_batch);
+            }
+            $(window).on('resize.userStatus orientationchange.userStatus', () => {
+                reflow_user_card_rows();
+                queue_visible_user_batch();
+            });
+            $(document).on('visibilitychange.userStatus', () => {
+                if (document.hidden) {
+                    if (user_poll_timer !== null) {
+                        clearTimeout(user_poll_timer);
+                        user_poll_timer = null;
+                    }
+                } else {
+                    queue_visible_user_batch();
+                    if (!user_request_in_flight) schedule_user_poll(0);
+                }
+            });
+        }
+
+        function manual_sync_users() {
+            request_user_data(true);
+        }
+
+        $(() => {
+            bind_view_mode_events();
+            bind_user_scroll_events();
+            load_view_mode();
+            applyCapabilityColumnVisibility();
+            apply_view_mode();
+            loadAppClassNameMap();
+            loadSystemBaseInfo(() => {
+                request_user_data(true);
+            });
+        });
 
 		function load_view_mode() {
 			var mobileDefault = false;
@@ -93,6 +263,36 @@
 			};
 		}
 
+        function reflow_user_card_rows(preserveScroll) {
+            const $cards = $('#user_status_cards');
+            const layout = get_card_row_layout($cards);
+            if (layout.columns === user_card_columns) return;
+            const cards = $cards.find('.user-card').toArray();
+            const $rows = $cards.children('.user-card-row');
+            const focus = capture_user_focus();
+            const anchor = view_mode === 'card' && !preserveScroll ? cards.find(card => card.getBoundingClientRect().bottom > 0) : null;
+            const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+            const rowCount = Math.ceil(cards.length / layout.columns);
+            for (let i = 0; i < rowCount; i++) {
+                let $row = $rows.eq(i);
+                if (!$row.length) $row = $('<div class="user-card-row"></div>').appendTo($cards);
+                $row.css('max-width', layout.rowWidth + 'px');
+                let next = $row[0].firstChild;
+                for (let j = i * layout.columns; j < Math.min((i + 1) * layout.columns, cards.length); j++) {
+                    const card = cards[j];
+                    if (card !== next) $row[0].insertBefore(card, next);
+                    next = card.nextSibling;
+                }
+            }
+            $rows.slice(rowCount).remove();
+            user_card_columns = layout.columns;
+            restore_user_focus(focus);
+            if (anchor) {
+                const delta = anchor.getBoundingClientRect().top - anchorTop;
+                if (delta) window.scrollBy(0, delta);
+            }
+        }
+
 		function applyCapabilityColumnVisibility() {
 			var sessionHeaderEl = document.getElementById('session_count_header');
 			var rssiHeaderEl = document.getElementById('rssi_header');
@@ -108,22 +308,31 @@
 			}
 		}
 
-		function loadSystemBaseInfo(callback) {
-			new XHR().get("<%=url('admin/services/oaf/api/get_system_base_info')%>", {}, function(x, data) {
-				user_session_enable = !!(data && parseInt(data.user_session_enable, 10) === 1);
-				user_rssi_enable = !!(data && Object.prototype.hasOwnProperty.call(data, 'wireless_support'));
-				applyCapabilityColumnVisibility();
-				if (callback) callback();
-			});
-		}
+        function loadSystemBaseInfo(callback) {
+            $.ajax({
+                url: "<%=url('admin/services/oaf/api/get_system_base_info')%>",
+                dataType: 'json',
+                timeout: 10000
+            }).done(data => {
+                user_session_enable = !!(data && parseInt(data.user_session_enable, 10) === 1);
+                user_rssi_enable = !!(data && Object.prototype.hasOwnProperty.call(data, 'wireless_support'));
+                applyCapabilityColumnVisibility();
+            }).always(() => {
+                if (callback) callback();
+            });
+        }
 
 		function loadAppClassNameMap(callback) {
 			if (app_class_map_loaded) {
 				if (callback) callback();
 				return;
 			}
-			new XHR().get("<%=url('admin/services/oaf/api/get_class_list')%>", {}, function(x, data) {
-				var classMap = {};
+            $.ajax({
+                url: "<%=url('admin/services/oaf/api/get_class_list')%>",
+                dataType: 'json',
+                timeout: 10000
+            }).done(data => {
+                var classMap = {};
 				var classPayload = data || {};
 				if (!Array.isArray(classPayload.class_list) && classPayload.data && Array.isArray(classPayload.data.class_list)) {
 					classPayload = classPayload.data;
@@ -152,38 +361,11 @@
 				});
 				app_class_name_map = classMap;
 				app_class_map_loaded = true;
-				if (callback) callback();
-			});
+            }).always(() => {
+                if (callback) callback();
+            });
 		}
 
-		function getAllUsersData(page) {
-			new XHR().get("<%=url('admin/services/oaf/api/get_all_users')%>", {flag: 3, page: page, page_size: page_size},
-				function (x, data) {
-					user_list_data = data.data;
-					total_num = data.data.total_num || 0;
-					total_page = data.data.total_page || 1;
-					cur_page = data.data.page || 1;
-					render_user_list(user_list_data);
-					render_pagination();
-				}
-			);
-		}
-
-		$(function() {
-			cur_page = 1;
-			bind_view_mode_events();
-			load_view_mode();
-			applyCapabilityColumnVisibility();
-			apply_view_mode();
-			loadAppClassNameMap();
-			loadSystemBaseInfo(function() {
-				getAllUsersData(cur_page);
-				setInterval(function() {
-					console.log("get user data");
-					getAllUsersData(cur_page);
-				}, 3000);
-			});
-		});
 
 		function showSuccessMessage(message = '<%:Operation succeeded%>') {
 			const $modal = $('#modal');
@@ -200,60 +382,27 @@
 				return;
 			}
 			var apiUrl = inBlacklist ? "<%=url('admin/services/oaf/api/del_mac_blacklist')%>" : "<%=url('admin/services/oaf/api/add_mac_blacklist')%>";
-			new XHR().post(apiUrl, {mac: mac}, function(x, data) {
-				if (data && data.code === 0) {
-					showSuccessMessage(inBlacklist ? '<%:Removed from blacklist%>' : '<%:Added to blacklist%>');
-					getAllUsersData(cur_page);
-				} else {
-					showSuccessMessage('<%:Operation failed%>');
-				}
-			}, function() {
-				showSuccessMessage('<%:Operation failed%>');
-			});
+            $.ajax({
+                url: apiUrl,
+                type: 'POST',
+                data: {mac: mac},
+                dataType: 'json',
+                timeout: 10000
+            }).done(data => {
+                if (data && data.code === 0) {
+                    showSuccessMessage(inBlacklist ? '<%:Removed from blacklist%>' : '<%:Added to blacklist%>');
+                    if (user_request_in_flight) user_blacklist_refresh_pending = true;
+                    else request_user_data(false);
+                } else {
+                    showSuccessMessage('<%:Operation failed%>');
+                }
+            }).fail(() => {
+                showSuccessMessage('<%:Operation failed%>');
+            });
 		}
 
 		
 
-		function generateMockData() {
-			return [
-				{ app_id: "App1", visit_time: 3600 },
-				{ app_id: "App2", visit_time: 1800 },
-				{ app_id: "App3", visit_time: 2400 },
-				{ app_id: "App4", visit_time: 1200 },
-				{ app_id: "App5", visit_time: 3000 }
-			];
-		}
-
-		function generateUserListData() {
-			return {
-				total_num: 5,
-				list: [
-					{
-						hostname: "Device1",
-						mac: "00:11:22:33:44:55",
-						ip: "192.168.1.2",
-						applist: [{ name: "App1" }, { name: "App2" }],
-						online: 1
-					}
-				]
-			};
-		}
-
-		function generateVisitListData() {
-			return {
-				list: [
-					{
-						appname: "App1",
-						hostname: "Device1",
-						mac: "00:11:22:33:44:55",
-						first_time: "2023-10-01 10:00:00",
-						total_time: 3600,
-						latest_action: 0
-					}
-			
-				]
-			};
-		}
 
 		function formatRate(bytesPerSec) {
 			if (!bytesPerSec || bytesPerSec < 1024) {
@@ -270,13 +419,13 @@
 			if (isNaN(rssiNum) || rssiNum === 0) {
 				return '<span>--</span>';
 			}
-			var color = '#ef4444';
-			if (rssiNum >= -60) {
-				color = '#22c55e';
-			} else if (rssiNum >= -75) {
-				color = '#f59e0b';
-			}
-			return '<span style="color: ' + color + ';">' + rssiNum + ' dBm</span>';
+            var quality = 'poor';
+            if (rssiNum >= -60) {
+                quality = 'good';
+            } else if (rssiNum >= -75) {
+                quality = 'fair';
+            }
+            return '<span class="user-signal-' + quality + '">' + rssiNum + ' dBm</span>';
 		}
 
 		function truncateDeviceName(str, maxLen) {
@@ -316,8 +465,8 @@
 				$tooltip = $('<div id="traffic-tooltip"></div>').appendTo('body');
 				$tooltip.css({
 					position: 'absolute',
-					backgroundColor: '#2d2d2d',
-					color: '#fff',
+                    backgroundColor: 'var(--background-color-high, #fff)',
+                    color: 'var(--text-color-high, #333)',
 					padding: '8px 12px',
 					borderRadius: '4px',
 					fontSize: '12px',
@@ -405,13 +554,27 @@
 				if (appId && iconDisabled) {
 					_iconStatusCache[appId] = 'failed';
 				}
-				if (appId && !iconDisabled && _iconStatusCache[appId] === 'loaded') {
-					return $('<span>').addClass('user-app-icon-wrap').toggleClass('user-app-icon-current', !!isCurrent).attr('title', appName).css({
-						width:'20px', height:'20px', borderRadius:'5px', marginRight:'4px',
-						display:'inline-block', flexShrink:0, verticalAlign:'middle', overflow:'hidden', position:'relative'
-					}).append($('<img>').addClass('user-app-icon-img').attr({src:iconSrc, alt:appName})
-						.css({width:'100%', height:'100%', borderRadius:'5px', display:'block', objectFit:'cover'}));
-				}
+                if (appId && !iconDisabled && _iconStatusCache[appId] === 'loaded') {
+                    var $loadedWrap = $('<span>').addClass('user-app-icon-wrap').toggleClass('user-app-icon-current', !!isCurrent).attr('title', appName).css({
+                        width:'20px', height:'20px', borderRadius:'5px', marginRight:'4px',
+                        display:'inline-block', flexShrink:0, verticalAlign:'middle', overflow:'hidden', position:'relative'
+                    }).append($('<img>').addClass('user-app-icon-img').attr({src:iconSrc, alt:appName})
+                        .css({width:'100%', height:'100%', borderRadius:'5px', display:'block', objectFit:'cover'}));
+                    if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+                        window.OAFIcon.bindFeatureHover($loadedWrap, {
+                            appid: appId,
+                            name: appName,
+                            apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                            texts: {
+                                loading: '<%:Loading...%>',
+                                error: '<%:Load failed%>',
+                                empty: '<%:No Data%>',
+                                titleSuffix: '<%:Feature Rules%>'
+                            }
+                        });
+                    }
+                    return $loadedWrap;
+                }
 				var $wrap = $('<span>').addClass('user-app-icon-wrap').toggleClass('user-app-icon-current', !!isCurrent).attr('title', appName).css({
 					width:'20px', height:'20px', borderRadius:'5px', marginRight:'4px',
 					display:'inline-flex', alignItems:'center', justifyContent:'center',
@@ -437,6 +600,19 @@
 					loader.onerror = (function(id) { return function() { _iconStatusCache[id] = 'failed'; }; })(appId);
 					loader.src = iconSrc;
 				}
+                if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+                    window.OAFIcon.bindFeatureHover($wrap, {
+                        appid: appId,
+                        name: appName,
+                        apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                        texts: {
+                            loading: '<%:Loading...%>',
+                            error: '<%:Load failed%>',
+                            empty: '<%:No Data%>',
+                            titleSuffix: '<%:Feature Rules%>'
+                        }
+                    });
+                }
 				return $wrap;
 			}
 
@@ -562,287 +738,278 @@
 			}
 
             function pickOneMatchedRule(detail) {
-                var statusKey = applyWhitelistPcStatus(detail.pc_status_key || detail.pc_status, detail);
-                var appRules = (detail && parseInt(detail.af_whitelist, 10) === 1) ? [] : (Array.isArray(detail.appfilter_rules) ? detail.appfilter_rules : []);
-                var macRules = (detail && parseInt(detail.mf_whitelist, 10) === 1) ? [] : (Array.isArray(detail.macfilter_rules) ? detail.macfilter_rules : []);
-                var sortByRuleId = function(a, b) {
-                    var aId = parseInt(a && a.rule_id, 10) || 0;
-                    var bId = parseInt(b && b.rule_id, 10) || 0;
-                    return aId - bId;
-                };
-                var appRule = appRules.length > 0 ? appRules.slice().sort(sortByRuleId)[0] : null;
-                var sortedMacRules = macRules.length > 0 ? macRules.slice().sort(sortByRuleId) : [];
-                var macRule = sortedMacRules.length > 0 ? sortedMacRules[0] : null;
-                var blacklistMacRule = null;
-                for (var i = 0; i < sortedMacRules.length; i++) {
-                    if (sortedMacRules[i] && sortedMacRules[i].match_type === 'blacklist') {
-                        blacklistMacRule = sortedMacRules[i];
-                        break;
-                    }
-                }
+                const statusKey = applyWhitelistPcStatus(detail?.pc_status_key || detail?.pc_status, detail);
+                const appRules = detail && parseInt(detail.af_whitelist, 10) === 1 ? [] : (Array.isArray(detail?.appfilter_rules) ? detail.appfilter_rules : []);
+                const macRules = detail && parseInt(detail.mf_whitelist, 10) === 1 ? [] : (Array.isArray(detail?.macfilter_rules) ? detail.macfilter_rules : []);
+                const sortByRuleId = (a, b) => (parseInt(a?.rule_id, 10) || 0) - (parseInt(b?.rule_id, 10) || 0);
+                const appRule = appRules.length ? [...appRules].sort(sortByRuleId)[0] : null;
+                const sortedMacRules = macRules.length ? [...macRules].sort(sortByRuleId) : [];
+                const macRule = sortedMacRules[0] || null;
+                const blacklistMacRule = sortedMacRules.find(rule => rule?.match_type === 'blacklist') || null;
 
-                if (statusKey === 'app_limited') {
-                    if (appRule) return { type: 'appfilter', rule: appRule };
-                }
+                if (statusKey === 'app_limited' && appRule) return {type: 'appfilter', rule: appRule};
                 if (statusKey === 'mac_blocked') {
-                    if (blacklistMacRule) return { type: 'macfilter', rule: blacklistMacRule };
-                    if (macRule) return { type: 'macfilter', rule: macRule };
+                    if (blacklistMacRule) return {type: 'macfilter', rule: blacklistMacRule};
+                    if (macRule) return {type: 'macfilter', rule: macRule};
                 }
-                if (blacklistMacRule) return { type: 'macfilter', rule: blacklistMacRule };
-                if (macRule) return { type: 'macfilter', rule: macRule };
-                if (appRule) return { type: 'appfilter', rule: appRule };
-                return { type: '', rule: null };
+                if (blacklistMacRule) return {type: 'macfilter', rule: blacklistMacRule};
+                if (macRule) return {type: 'macfilter', rule: macRule};
+                if (appRule) return {type: 'appfilter', rule: appRule};
+                return {type: '', rule: null};
             }
 
-			function showParentalControlDetail(mac) {
-				new XHR().get("<%=url('admin/services/oaf/api/get_parental_control_detail')%>", {mac: mac}, function(x, data) {
-					var detail = data || {};
-					loadAppClassNameMap(function() {
-						var matched = pickOneMatchedRule(detail);
-						var statusKey = applyWhitelistPcStatus(detail.pc_status_key || detail.pc_status, detail);
-						$('#pcDetailMac').text(mac || '--');
-						$('#pcDetailStatus').text(formatPcStatus(statusKey));
-						$('#pcRuleDetailBody').html(buildRuleRows(matched.type, matched.rule));
-						$('#pcDetailModal').css('display', 'flex');
-					});
-				});
-			}
+            function showParentalControlDetail(mac) {
+                $.ajax({
+                    url: "<%=url('admin/services/oaf/api/get_parental_control_detail')%>",
+                    data: {mac: mac},
+                    dataType: 'json',
+                    timeout: 10000
+                }).done(data => {
+                    if (!data || (data.code !== undefined && Number(data.code) !== 2000)) {
+                        showSuccessMessage('<%:Operation failed%>');
+                        return;
+                    }
+                    const detail = data;
+                    loadAppClassNameMap(() => {
+                        const matched = pickOneMatchedRule(detail);
+                        const statusKey = applyWhitelistPcStatus(detail.pc_status_key || detail.pc_status, detail);
+                        $('#pcDetailMac').text(mac || '--');
+                        $('#pcDetailStatus').text(formatPcStatus(statusKey));
+                        $('#pcRuleDetailBody').html(buildRuleRows(matched.type, matched.rule));
+                        $('#pcDetailModal').css('display', 'flex');
+                    });
+                }).fail(() => {
+                    showSuccessMessage('<%:Operation failed%>');
+                });
+            }
 
-		function render_user_list(data) {
-			const $tb = $('#user_status_table');
-			const $cards = $('#user_status_cards');
-			const user_list = data.list;
-			if (user_list && $tb.length && $cards.length) {
-				$tb.find('tr:gt(0)').remove();
-				$cards.empty();
-				var cardLayout = get_card_row_layout($cards);
-				var cardIndex = 0;
-				var $cardRow = null;
-				for (var i = 0; i < user_list.length; i++) {
-					var nickname = (user_list[i].nickname || "").trim();
-					var hostname = (user_list[i].hostname || "").trim();
-					var mac = user_list[i].mac || "--";
-					var list_display_name = nickname || hostname || "--";
-					var list_full_name = list_display_name;
-					var list_truncated_name = truncateDeviceName(list_display_name, 16);
-					var card_title = nickname || hostname || mac || "--";
-					var card_identity_name = nickname || hostname || "";
-					var card_info_line = card_identity_name ? (card_identity_name + ' (' + mac + ')') : mac;
+        function capture_user_focus() {
+            const active = document.activeElement;
+            if (!active) return null;
+            const $control = $(active).closest('[data-user-control]');
+            const $owner = $control.closest('[data-user-mac]');
+            if (!$control.length || !$owner.length) return null;
+            return {mac: $owner.attr('data-user-mac'), control: $control.attr('data-user-control'), view: $owner.hasClass('user-card') ? 'card' : 'row'};
+        }
 
-					const $tr = $('<tr class="tr"></tr>');
-					if (user_list[i].online != 1) {
-						$tr.css('color', '#A9A9A9');
-					}
-					$tr.append(`<td class="td user-col-device">
-						<div class="user-device-info">
-							${buildDeviceIconHtml(list_display_name, mac)}
-							<div class="user-device-text">
-								<div class="user-device-name" title="${escapeHtml(list_full_name)}">${escapeHtml(list_truncated_name)}</div>
-								<div class="user-device-mac" title="${escapeHtml(mac)}">${escapeHtml(mac)}</div>
-							</div>
-						</div>
-					</td>`);
-					$tr.append(`<td class="td user-col-ip">${user_list[i].ip}</td>`);
-					var upRate = formatRate(user_list[i].up_rate || 0);
-					$tr.append('<td class="td user-col-up-rate"><span style="color: #60a5fa;">' + upRate + '</span></td>');
-					var downRate = formatRate(user_list[i].down_rate || 0);
-					$tr.append('<td class="td user-col-down-rate"><span style="color: #22c55e;">' + downRate + '</span></td>');
-					if (user_rssi_enable) {
-						$tr.append('<td class="td user-col-signal">' + formatRssi(user_list[i].rssi) + '</td>');
-					}
-					if (user_session_enable) {
-						var sessionDisplay = '--';
-						if (parseInt(user_list[i].online, 10) === 1) {
-							var sessionNum = parseInt(user_list[i].session, 10);
-							sessionDisplay = isNaN(sessionNum) ? '0' : String(sessionNum);
-						}
-						$tr.append('<td class="td user-col-sessions">' + sessionDisplay + '</td>');
-					}
-					var todayUpBytes = user_list[i].today_up_bytes || 0;
-					var todayDownBytes = user_list[i].today_down_bytes || 0;
-					var totalTraffic = todayUpBytes + todayDownBytes;
-					var upTrafficStr = formatTraffic(todayUpBytes);
-					var downTrafficStr = formatTraffic(todayDownBytes);
-					var totalTrafficStr = formatTraffic(totalTraffic);
-					var cellId = 'traffic-cell-' + i;
-					$tr.append('<td class="td user-col-traffic"><span id="' + cellId + '" style="position: relative;" onmouseenter="showTrafficTooltip(event, \'' + upTrafficStr + '\', \'' + downTrafficStr + '\')" onmouseleave="hideTrafficTooltip(event)">' + totalTrafficStr + '</span></td>');
-					var todayActiveTimeStr = get_display_time(user_list[i].today_active_time || 0);
-					$tr.append('<td class="td user-col-net-time">' + todayActiveTimeStr + '</td>');
-					var $appsTd = $('<td class="td user-col-apps">');
-					var applist = Array.isArray(user_list[i].applist) ? user_list[i].applist : [];
-					var isOnline = parseInt(user_list[i].online, 10) === 1;
-					var current_app = isOnline ? (user_list[i].app || "--") : "--";
-					var current_app_id = isOnline ? (user_list[i].app_id || 0) : 0;
-					var displayApplist = buildDisplayAppList(applist, current_app_id, current_app, user_list[i].app_icon);
-					if (displayApplist.length === 0) {
-						$appsTd.text('--');
-					} else {
-						displayApplist.forEach(function(app) { $appsTd.append(buildAppIconEl(app, app.current)); });
-					}
-					$tr.append($appsTd);
-						var current_url = isOnline ? (user_list[i].url || "--") : "--";
-						var display_url = current_url;
-						if (current_url !== "--" && current_url.length > 20) {
-							display_url = current_url.substring(0, 20) + "...";
-						}
-						$tr.append(`<td class="td user-col-url"><span title="${current_url}">${display_url}</span></td>`);
-						var pcStatusKey = applyWhitelistPcStatus(user_list[i].pc_status_key || user_list[i].pc_status, user_list[i]);
-						var pcStatus = formatPcStatus(pcStatusKey);
-						var pcStatusHtml = '<span>' + escapeHtml(pcStatus) + '</span>';
-						if (pcStatusKey === "unlimited") {
-							pcStatusHtml = '<span class="pc-status-unrestricted">' + escapeHtml(pcStatus) + '</span>';
-						} else if (pcStatusKey === "mac_blocked" || pcStatusKey === "app_limited") {
-							pcStatusHtml = '<a href="javascript:void(0);" class="pc-status-link" onclick="showParentalControlDetail(\'' + user_list[i].mac + '\')">' + escapeHtml(pcStatus) + '</a>';
-						}
-						$tr.append('<td class="td user-col-permission">' + pcStatusHtml + '</td>');
-						var statusHtml = '<span class="user-status-label offline"><%:Offline%></span>';
-						if (user_list[i].online == 1) {
-							if (user_list[i].active == 1) {
-								statusHtml = '<span class="user-status-label active"><%:Active%></span>';
-							} else {
-								statusHtml = '<span class="user-status-label online"><%:Online%></span>';
-							}
-						}
-					$tr.append('<td class="td user-col-status">' + statusHtml + '</td>');
-					var inBlacklist = parseInt(user_list[i].in_blacklist, 10) === 1;
-					var blacklistText = inBlacklist ? '<%:Unblock%>' : '<%:Block%>';
-					var blacklistClass = inBlacklist ? 'cbi-button cbi-button-add user-unblock-btn' : 'cbi-button cbi-button-remove user-block-btn';
-					$tr.append(`
-						<td class="td user-col-actions">
-							<button type="button" class="cbi-button cbi-button-add" onclick="window.location.href='<%=url("admin/services/oaf/users/detail")%>?mac=' + encodeURIComponent('${user_list[i].mac}')" style="margin-right: 5px;"><%:Detail%></button>
-							<button type="button" class="${blacklistClass}" onclick="toggleBlacklist('${user_list[i].mac}', ${inBlacklist ? 1 : 0})">${blacklistText}</button>
-						</td>
-					`);
-					$tb.append($tr);
+        function restore_user_focus(focus) {
+            if (!focus) return;
+            const $owner = $('[data-user-mac]').filter((index, element) => {
+                const $element = $(element);
+                return $element.attr('data-user-mac') === focus.mac && (focus.view === 'card' ? $element.hasClass('user-card') : $element.hasClass('user-data-row'));
+            }).first();
+            const $control = $owner.find('[data-user-control]').filter((index, element) => $(element).attr('data-user-control') === focus.control).first();
+            if ($control.length && document.activeElement !== $control[0]) $control[0].focus({preventScroll: true});
+        }
 
-					var onlineBadge = '<span class="user-card-status offline"><%:Offline%></span>';
-					if (user_list[i].online == 1) {
-						if (user_list[i].active == 1) {
-							onlineBadge = '<span class="user-card-status active"><%:Active%></span>';
-						} else {
-							onlineBadge = '<span class="user-card-status online"><%:Online%></span>';
-						}
-					}
-					var ipText = user_list[i].ip || '--';
-					var currentUrlText = current_url || '--';
-					var sessionInfo = '';
-					if (user_session_enable) {
-						var sessionNumCard = parseInt(user_list[i].session, 10);
-						var sessionDisplayCard = parseInt(user_list[i].online, 10) === 1 ? (isNaN(sessionNumCard) ? '0' : String(sessionNumCard)) : '--';
-						sessionInfo = '<div class="user-card-line"><span class="user-card-label"><%:Session Count%></span><span class="user-card-value">' + sessionDisplayCard + '</span></div>';
-					}
-					var rssiInfo = '';
-					if (user_rssi_enable) {
-						rssiInfo = '<div class="user-card-line"><span class="user-card-label"><%:Signal%></span><span class="user-card-value">' + formatRssi(user_list[i].rssi) + '</span></div>';
-					}
-					var $card = $(`
-						<div class="user-card">
-							<div class="user-card-head">
-								<div class="user-card-device">
-									${buildDeviceIconHtml(card_title, mac)}
-									<div class="user-card-title-wrap">
-										<div class="user-card-title" title="${escapeHtml(card_info_line)}">${escapeHtml(card_info_line)}</div>
-										<div class="user-card-ip" title="${escapeHtml(ipText)}">${escapeHtml(ipText)}</div>
-									</div>
-								</div>
-								${onlineBadge}
-							</div>
-							<div class="user-card-body">
-								<div class="user-card-line"><span class="user-card-label" title="<%:Today Traffic%>"><%:Internet Traffic%></span><span class="user-card-value">${totalTrafficStr}</span></div>
-								<div class="user-card-line"><span class="user-card-label" title="<%:Today Internet Duration%>"><%:Internet Duration%></span><span class="user-card-value">${todayActiveTimeStr}</span></div>
-								<div class="user-card-line"><span class="user-card-label"><%:Rate%></span><span class="user-card-value user-card-rate"><span class="user-card-up">&uarr; ${upRate}</span><span class="user-card-down">&darr; ${downRate}</span></span></div>
-								${sessionInfo}
-								${rssiInfo}
-								<div class="user-card-line user-card-apps"><span class="user-card-label"><%:Common App%></span><span class="user-card-value user-card-apps-icons"></span></div>
-								<div class="user-card-line"><span class="user-card-label"><%:Visiting URL%></span><span class="user-card-value user-card-url" title="${escapeHtml(currentUrlText)}">${escapeHtml(currentUrlText)}</span></div>
-								<div class="user-card-line"><span class="user-card-label"><%:Internet Permission%></span><span class="user-card-value">${pcStatusHtml}</span></div>
-							</div>
-							<div class="user-card-actions">
-								<button type="button" class="cbi-button cbi-button-add" onclick="window.location.href='<%=url("admin/services/oaf/users/detail")%>?mac=' + encodeURIComponent('${user_list[i].mac}')"><%:Detail%></button>
-								<button type="button" class="${blacklistClass}" onclick="toggleBlacklist('${user_list[i].mac}', ${inBlacklist ? 1 : 0})">${blacklistText}</button>
-							</div>
-						</div>
-					`);
-					if (cardIndex % cardLayout.columns === 0) {
-						$cardRow = $('<div class="user-card-row"></div>').css('max-width', cardLayout.rowWidth + 'px');
-						$cards.append($cardRow);
-					}
-					$cardRow.append($card);
-					cardIndex++;
-					var $cardAppsEl = $card.find('.user-card-apps-icons');
-					if (displayApplist.length === 0) {
-						$cardAppsEl.text('--');
-					} else {
-						displayApplist.forEach(function(app) { $cardAppsEl.append(buildAppIconEl(app, app.current)); });
-					}
-				}
-				apply_view_mode();
-			}
-		}
+        function user_permission_html(item) {
+            const statusKey = applyWhitelistPcStatus(item.pc_status_key || item.pc_status, item);
+            const statusText = escapeHtml(formatPcStatus(statusKey));
+            if (statusKey === 'unlimited') return '<span class="pc-status-unrestricted">' + statusText + '</span>';
+            if (statusKey === 'mac_blocked' || statusKey === 'app_limited') {
+                return '<a href="javascript:void(0);" class="pc-status-link" data-user-control="permission" onclick="showParentalControlDetail(\'' + item.mac + '\')">' + statusText + '</a>';
+            }
+            return '<span>' + statusText + '</span>';
+        }
 
-		function render_pagination() {
-			const $paginationDiv = $('#pagination');
-			if ($paginationDiv.length === 0) return;
-			
-			if (total_page <= 1) {
-				$paginationDiv.html('');
-				return;
-			}
-			
-			let html = '<div style="display: flex; justify-content: center; align-items: center; margin: 20px 0; gap: 5px;">';
-			
-			if (cur_page > 1) {
-				html += '<button type="button" class="cbi-button" onclick="goToPage(' + (cur_page - 1) + ')" style="min-width: 60px;"><%:Prev Page%></button>';
-			} else {
-				html += '<button type="button" class="cbi-button" disabled style="min-width: 60px; opacity: 0.5;"><%:Prev Page%></button>';
-			}
-			
-			var startPage = Math.max(1, cur_page - 2);
-			var endPage = Math.min(total_page, cur_page + 2);
-			
-			if (startPage > 1) {
-				html += '<button type="button" class="cbi-button" onclick="goToPage(1)" style="min-width: 40px;">1</button>';
-				if (startPage > 2) {
-					html += '<span style="padding: 0 5px;">...</span>';
-				}
-			}
-			
-			for (var i = startPage; i <= endPage; i++) {
-				if (i === cur_page) {
-					html += '<button type="button" class="cbi-button cbi-button-action" style="min-width: 40px; font-weight: bold;">' + i + '</button>';
-				} else {
-					html += '<button type="button" class="cbi-button" onclick="goToPage(' + i + ')" style="min-width: 40px;">' + i + '</button>';
-				}
-			}
-			
-			if (endPage < total_page) {
-				if (endPage < total_page - 1) {
-					html += '<span style="padding: 0 5px;">...</span>';
-				}
-				html += '<button type="button" class="cbi-button" onclick="goToPage(' + total_page + ')" style="min-width: 40px;">' + total_page + '</button>';
-			}
-			
-			if (cur_page < total_page) {
-				html += '<button type="button" class="cbi-button" onclick="goToPage(' + (cur_page + 1) + ')" style="min-width: 60px;"><%:Next Page%></button>';
-			} else {
-				html += '<button type="button" class="cbi-button" disabled style="min-width: 60px; opacity: 0.5;"><%:Next Page%></button>';
-			}
-			
-			var startRecord = (cur_page - 1) * page_size + 1;
-			var endRecord = Math.min(cur_page * page_size, total_num);
-			html += '<span style="margin-left: 20px; color: #999;"><%:Total%> ' + total_num + ' <%:Records%>, <%:Showing%> ' + startRecord + '-' + endRecord + ' </span>';
-			
-			html += '</div>';
-			$paginationDiv.html(html);
-		}
-		
-		function goToPage(page) {
-			if (page < 1 || page > total_page || page === cur_page) {
-				return;
-			}
-			cur_page = page;
-			getAllUsersData(cur_page);
-		}
+        function update_user_permission($container, item) {
+            const content = user_permission_html(item);
+            if ($container.data('permission-html') === content) return;
+            $container.data('permission-html', content).html(content);
+        }
+
+        function update_display_apps($container, apps) {
+            const signature = JSON.stringify(apps);
+            if ($container.data('apps-signature') === signature) return;
+            $container.data('apps-signature', signature).empty();
+            if (apps.length === 0) $container.text('--');
+            else apps.forEach(app => $container.append(buildAppIconEl(app, app.current)));
+        }
+
+        function update_user_row_dynamic($tr, item, displayApplist) {
+            const nickname = (item.nickname || '').trim();
+            const hostname = (item.hostname || '').trim();
+            const mac = user_mac(item) || '--';
+            const displayName = nickname || hostname || '--';
+            const isOnline = parseInt(item.online, 10) === 1;
+            $tr.toggleClass('user-offline-row', !isOnline);
+            $tr.find('.user-device-name').text(truncateDeviceName(displayName, 16)).attr('title', displayName);
+            $tr.find('.user-device-mac').text(mac).attr('title', mac);
+            $tr.find('.user-device-icon').text((displayName || mac || '?').charAt(0).toUpperCase()).css('background', appLetterColor(displayName || mac));
+            $tr.find('.user-col-ip').text(item.ip || '--');
+            $tr.find('.user-col-up-rate span').text(formatRate(item.up_rate || 0));
+            $tr.find('.user-col-down-rate span').text(formatRate(item.down_rate || 0));
+            if (user_rssi_enable) $tr.find('.user-col-signal').html(formatRssi(item.rssi));
+            if (user_session_enable) {
+                const sessionNum = parseInt(item.session, 10);
+                $tr.find('.user-col-sessions').text(isOnline ? (isNaN(sessionNum) ? '0' : String(sessionNum)) : '--');
+            }
+            const upBytes = item.today_up_bytes || 0;
+            const downBytes = item.today_down_bytes || 0;
+            const $traffic = $tr.find('.user-col-traffic span');
+            $traffic.text(formatTraffic(upBytes + downBytes)).attr('onmouseenter', "showTrafficTooltip(event, '" + formatTraffic(upBytes) + "', '" + formatTraffic(downBytes) + "')");
+            $tr.find('.user-col-net-time').text(get_display_time(item.today_active_time || 0));
+            update_display_apps($tr.find('.user-col-apps'), displayApplist);
+            const currentUrl = isOnline ? (item.url || '--') : '--';
+            $tr.find('.user-col-url span').text(currentUrl.length > 20 ? currentUrl.substring(0, 20) + '...' : currentUrl).attr('title', currentUrl);
+            update_user_permission($tr.find('.user-col-permission'), item);
+            const statusText = item.online == 1 ? (item.active == 1 ? '<%:Active%>' : '<%:Online%>') : '<%:Offline%>';
+            const statusClass = item.online == 1 ? (item.active == 1 ? 'active' : 'online') : 'offline';
+            $tr.find('.user-status-label').removeClass('active online offline').addClass(statusClass).text(statusText);
+            const inBlacklist = parseInt(item.in_blacklist, 10) === 1;
+            const $blacklist = $tr.find('[data-user-control="blacklist"]');
+            $blacklist.removeClass('cbi-button-add cbi-button-remove user-unblock-btn user-block-btn').addClass(inBlacklist ? 'cbi-button-add user-unblock-btn' : 'cbi-button-remove user-block-btn').text(inBlacklist ? '<%:Unblock%>' : '<%:Block%>').attr('onclick', "toggleBlacklist('" + mac + "', " + (inBlacklist ? 1 : 0) + ")");
+        }
+
+        function user_render_signature(item) {
+            return JSON.stringify(item) + '|' + (user_session_enable ? '1' : '0') + '|' + (user_rssi_enable ? '1' : '0');
+        }
+
+        function update_user_row($tr, item) {
+            const nickname = (item.nickname || '').trim();
+            const hostname = (item.hostname || '').trim();
+            const mac = user_mac(item) || '--';
+            const displayName = nickname || hostname || '--';
+            const isOnline = parseInt(item.online, 10) === 1;
+            const $appsTd = $('<td class="td user-col-apps">');
+            const displayApplist = buildDisplayAppList(Array.isArray(item.applist) ? item.applist : [], isOnline ? (item.app_id || 0) : 0, isOnline ? (item.app || '--') : '--', item.app_icon);
+            const signature = user_render_signature(item);
+            if ($tr.data('user-signature') === signature) return;
+            $tr.data('user-signature', signature);
+            if ($tr.children().length) {
+                update_user_row_dynamic($tr, item, displayApplist);
+                return;
+            }
+            $tr.toggleClass('user-offline-row', !isOnline);
+            $tr.append('<td class="td user-col-device"><div class="user-device-info">' + buildDeviceIconHtml(displayName, mac) + '<div class="user-device-text"><div class="user-device-name" title="' + escapeHtml(displayName) + '">' + escapeHtml(truncateDeviceName(displayName, 16)) + '</div><div class="user-device-mac" title="' + escapeHtml(mac) + '">' + escapeHtml(mac) + '</div></div></div></td>');
+            $tr.append('<td class="td user-col-ip">' + escapeHtml(item.ip || '--') + '</td>');
+            $tr.append('<td class="td user-col-up-rate"><span class="user-rate-up">' + formatRate(item.up_rate || 0) + '</span></td>');
+            $tr.append('<td class="td user-col-down-rate"><span class="user-rate-down">' + formatRate(item.down_rate || 0) + '</span></td>');
+            if (user_rssi_enable) $tr.append('<td class="td user-col-signal">' + formatRssi(item.rssi) + '</td>');
+            if (user_session_enable) {
+                const sessionNum = parseInt(item.session, 10);
+                $tr.append('<td class="td user-col-sessions">' + (isOnline ? (isNaN(sessionNum) ? '0' : String(sessionNum)) : '--') + '</td>');
+            }
+            const upBytes = item.today_up_bytes || 0;
+            const downBytes = item.today_down_bytes || 0;
+            $tr.append('<td class="td user-col-traffic"><span style="position: relative;" onmouseenter="showTrafficTooltip(event, \'' + formatTraffic(upBytes) + '\', \'' + formatTraffic(downBytes) + '\')" onmouseleave="hideTrafficTooltip(event)">' + formatTraffic(upBytes + downBytes) + '</span></td>');
+            $tr.append('<td class="td user-col-net-time">' + get_display_time(item.today_active_time || 0) + '</td>');
+            update_display_apps($appsTd, displayApplist);
+            $tr.append($appsTd);
+            const currentUrl = isOnline ? (item.url || '--') : '--';
+            $tr.append('<td class="td user-col-url"><span title="' + escapeHtml(currentUrl) + '">' + escapeHtml(currentUrl.length > 20 ? currentUrl.substring(0, 20) + '...' : currentUrl) + '</span></td>');
+            $tr.append('<td class="td user-col-permission">' + user_permission_html(item) + '</td>');
+            $tr.find('.user-col-permission').data('permission-html', user_permission_html(item));
+            const statusText = item.online == 1 ? (item.active == 1 ? '<%:Active%>' : '<%:Online%>') : '<%:Offline%>';
+            const statusClass = item.online == 1 ? (item.active == 1 ? 'active' : 'online') : 'offline';
+            $tr.append('<td class="td user-col-status"><span class="user-status-label ' + statusClass + '">' + statusText + '</span></td>');
+            const inBlacklist = parseInt(item.in_blacklist, 10) === 1;
+            const blacklistClass = inBlacklist ? 'cbi-button cbi-button-add user-unblock-btn' : 'cbi-button cbi-button-remove user-block-btn';
+            $tr.append('<td class="td user-col-actions"><button type="button" data-user-control="detail" class="cbi-button cbi-button-add" onclick="window.location.href=\'<%=url("admin/services/oaf/users/detail")%>?mac=\' + encodeURIComponent(\'' + mac + '\')" style="margin-right: 5px;"><%:Detail%></button><button type="button" data-user-control="blacklist" class="' + blacklistClass + '" onclick="toggleBlacklist(\'' + mac + '\', ' + (inBlacklist ? 1 : 0) + ')">' + (inBlacklist ? '<%:Unblock%>' : '<%:Block%>') + '</button></td>');
+        }
+
+        function update_user_card_dynamic($card, item, displayApplist) {
+            const nickname = (item.nickname || '').trim();
+            const hostname = (item.hostname || '').trim();
+            const mac = user_mac(item) || '--';
+            const identity = nickname || hostname;
+            const isOnline = parseInt(item.online, 10) === 1;
+            const currentUrl = isOnline ? (item.url || '--') : '--';
+            $card.find('.user-device-icon').text((identity || mac).charAt(0).toUpperCase()).css('background', appLetterColor(identity || mac));
+            $card.find('.user-card-title').text(identity ? identity + ' (' + mac + ')' : mac).attr('title', identity ? identity + ' (' + mac + ')' : mac);
+            $card.find('.user-card-ip').text(item.ip || '--').attr('title', item.ip || '--');
+            const $badge = $card.find('.user-card-status');
+            $badge.removeClass('active online offline').addClass(isOnline ? (item.active == 1 ? 'active' : 'online') : 'offline').text(isOnline ? (item.active == 1 ? '<%:Active%>' : '<%:Online%>') : '<%:Offline%>');
+            const $lines = $card.find('.user-card-body > .user-card-line');
+            let lineIndex = 0;
+            $lines.eq(lineIndex++).find('.user-card-value').text(formatTraffic((item.today_up_bytes || 0) + (item.today_down_bytes || 0)));
+            $lines.eq(lineIndex++).find('.user-card-value').text(get_display_time(item.today_active_time || 0));
+            $lines.eq(lineIndex++).find('.user-card-up').html('&uarr; ' + formatRate(item.up_rate || 0));
+            $lines.eq(lineIndex - 1).find('.user-card-down').html('&darr; ' + formatRate(item.down_rate || 0));
+            if (user_session_enable) {
+                const sessionNum = parseInt(item.session, 10);
+                $lines.eq(lineIndex++).find('.user-card-value').text(isOnline ? (isNaN(sessionNum) ? '0' : String(sessionNum)) : '--');
+            }
+            if (user_rssi_enable) $lines.eq(lineIndex++).find('.user-card-value').html(formatRssi(item.rssi));
+            update_display_apps($lines.eq(lineIndex++).find('.user-card-apps-icons'), displayApplist);
+            $lines.eq(lineIndex++).find('.user-card-url').text(currentUrl).attr('title', currentUrl);
+            update_user_permission($lines.eq(lineIndex).find('.user-card-value'), item);
+            const inBlacklist = parseInt(item.in_blacklist, 10) === 1;
+            const $blacklist = $card.find('[data-user-control="blacklist"]');
+            $blacklist.removeClass('cbi-button-add cbi-button-remove user-unblock-btn user-block-btn').addClass(inBlacklist ? 'cbi-button-add user-unblock-btn' : 'cbi-button-remove user-block-btn').text(inBlacklist ? '<%:Unblock%>' : '<%:Block%>').attr('onclick', "toggleBlacklist('" + mac + "', " + (inBlacklist ? 1 : 0) + ")");
+        }
+
+        function update_user_card($card, item) {
+            const nickname = (item.nickname || '').trim();
+            const hostname = (item.hostname || '').trim();
+            const mac = user_mac(item) || '--';
+            const identity = nickname || hostname;
+            const title = identity || mac;
+            const isOnline = parseInt(item.online, 10) === 1;
+            const currentUrl = isOnline ? (item.url || '--') : '--';
+            const displayApplist = buildDisplayAppList(Array.isArray(item.applist) ? item.applist : [], isOnline ? (item.app_id || 0) : 0, isOnline ? (item.app || '--') : '--', item.app_icon);
+            const signature = user_render_signature(item);
+            if ($card.data('user-signature') === signature) return;
+            $card.data('user-signature', signature);
+            if ($card.children().length) {
+                update_user_card_dynamic($card, item, displayApplist);
+                return;
+            }
+            const badgeText = isOnline ? (item.active == 1 ? '<%:Active%>' : '<%:Online%>') : '<%:Offline%>';
+            const badgeClass = isOnline ? (item.active == 1 ? 'active' : 'online') : 'offline';
+            let sessionInfo = '';
+            if (user_session_enable) {
+                const sessionNum = parseInt(item.session, 10);
+                sessionInfo = '<div class="user-card-line"><span class="user-card-label"><%:Session Count%></span><span class="user-card-value">' + (isOnline ? (isNaN(sessionNum) ? '0' : sessionNum) : '--') + '</span></div>';
+            }
+            const rssiInfo = user_rssi_enable ? '<div class="user-card-line"><span class="user-card-label"><%:Signal%></span><span class="user-card-value">' + formatRssi(item.rssi) + '</span></div>' : '';
+            $card.append('<div class="user-card-head"><div class="user-card-device">' + buildDeviceIconHtml(title, mac) + '<div class="user-card-title-wrap"><div class="user-card-title" title="' + escapeHtml(identity ? identity + ' (' + mac + ')' : mac) + '">' + escapeHtml(identity ? identity + ' (' + mac + ')' : mac) + '</div><div class="user-card-ip" title="' + escapeHtml(item.ip || '--') + '">' + escapeHtml(item.ip || '--') + '</div></div></div><span class="user-card-status ' + badgeClass + '">' + badgeText + '</span></div><div class="user-card-body"><div class="user-card-line"><span class="user-card-label" title="<%:Today Traffic%>"><%:Internet Traffic%></span><span class="user-card-value">' + formatTraffic((item.today_up_bytes || 0) + (item.today_down_bytes || 0)) + '</span></div><div class="user-card-line"><span class="user-card-label" title="<%:Today Internet Duration%>"><%:Internet Duration%></span><span class="user-card-value">' + get_display_time(item.today_active_time || 0) + '</span></div><div class="user-card-line"><span class="user-card-label"><%:Rate%></span><span class="user-card-value user-card-rate"><span class="user-card-up">&uarr; ' + formatRate(item.up_rate || 0) + '</span><span class="user-card-down">&darr; ' + formatRate(item.down_rate || 0) + '</span></span></div>' + sessionInfo + rssiInfo + '<div class="user-card-line user-card-apps"><span class="user-card-label"><%:Common App%></span><span class="user-card-value user-card-apps-icons"></span></div><div class="user-card-line"><span class="user-card-label"><%:Visiting URL%></span><span class="user-card-value user-card-url" title="' + escapeHtml(currentUrl) + '">' + escapeHtml(currentUrl) + '</span></div><div class="user-card-line"><span class="user-card-label"><%:Internet Permission%></span><span class="user-card-value">' + user_permission_html(item) + '</span></div></div>');
+            $card.find('.user-card-body > .user-card-line').last().find('.user-card-value').data('permission-html', user_permission_html(item));
+            update_display_apps($card.find('.user-card-apps-icons'), displayApplist);
+            const inBlacklist = parseInt(item.in_blacklist, 10) === 1;
+            const blacklistClass = inBlacklist ? 'cbi-button cbi-button-add user-unblock-btn' : 'cbi-button cbi-button-remove user-block-btn';
+            $card.append('<div class="user-card-actions"><button type="button" data-user-control="detail" class="cbi-button cbi-button-add" onclick="window.location.href=\'<%=url("admin/services/oaf/users/detail")%>?mac=\' + encodeURIComponent(\'' + mac + '\')"><%:Detail%></button><button type="button" data-user-control="blacklist" class="' + blacklistClass + '" onclick="toggleBlacklist(\'' + mac + '\', ' + (inBlacklist ? 1 : 0) + ')">' + (inBlacklist ? '<%:Unblock%>' : '<%:Block%>') + '</button></div>');
+        }
+
+        function render_user_list(data, preserveScroll) {
+            const $tb = $('#user_status_table');
+            const $cards = $('#user_status_cards');
+            const userList = Array.isArray(data?.list) ? data.list : [];
+            const focus = capture_user_focus();
+            const scrollY = preserveScroll ? window.scrollY : null;
+            const visibleMacs = new Set(userList.map(user_mac));
+            let removed = false;
+            user_nodes_by_mac.forEach((node, mac) => {
+                if (visibleMacs.has(mac)) return;
+                node.row.remove();
+                node.card.remove();
+                user_nodes_by_mac.delete(mac);
+                removed = true;
+            });
+            if (removed) user_card_columns = 0;
+            $('#user_status_loading_row').hide();
+            userList.forEach(item => {
+                const mac = user_mac(item);
+                if (!mac) return;
+                let node = user_nodes_by_mac.get(mac);
+                if (!node) {
+                    const $tr = $('<tr class="tr user-data-row"></tr>').attr('data-user-mac', mac).appendTo($tb);
+                    const cardIndex = $cards.find('.user-card').length;
+                    const layout = get_card_row_layout($cards);
+                    const $cardRow = cardIndex % layout.columns === 0 ? $('<div class="user-card-row"></div>').css('max-width', layout.rowWidth + 'px').appendTo($cards) : $cards.find('.user-card-row').last();
+                    const $card = $('<div class="user-card"></div>').attr('data-user-mac', mac).appendTo($cardRow);
+                    node = {row: $tr, card: $card};
+                    user_nodes_by_mac.set(mac, node);
+                }
+                update_user_row(node.row, item);
+                update_user_card(node.card, item);
+            });
+            reflow_user_card_rows(preserveScroll);
+            apply_view_mode();
+            restore_user_focus(focus);
+            if (preserveScroll && window.scrollY !== scrollY) window.scrollTo(window.scrollX, scrollY);
+            queue_visible_user_batch();
+        }
 
 		function render_visit_list_table(data) {
 			const $tb = $('#visit_list_table');
@@ -928,26 +1095,38 @@
 		}
 
 
-		function showDetails(mac) {
-			var $modal = $('#detailsModal');
-			$modal.css('display', 'flex');
+        function showDetails(mac) {
+            $('#detailsModal').css('display', 'flex');
 
-			new XHR().get("<%=url('admin/services/oaf/api/dev_visit_time')%>/" + mac, null,
-				function (x, st) {
-					visit_time_data = st;
-					console.log("visit_time_data = " + visit_time_data);
-					display_app_visit_view(visit_time_data);
-				}
-			);
+            $.ajax({
+                url: "<%=url('admin/services/oaf/api/dev_visit_time')%>/" + encodeURIComponent(mac),
+                dataType: 'json',
+                timeout: 10000
+            }).done(data => {
+                if (!Array.isArray(data)) {
+                    showSuccessMessage('<%:Operation failed%>');
+                    return;
+                }
+                visit_time_data = data;
+                display_app_visit_view(visit_time_data);
+            }).fail(() => {
+                showSuccessMessage('<%:Operation failed%>');
+            });
 
-			new XHR().get("<%=url('admin/services/oaf/api/dev_visit_list')%>/" + mac, null,
-				function (x, st) {
-					visit_list_data = st;
-					console.log("visit_list_data = " + visit_list_data);
-					render_visit_list_table(visit_list_data);
-				}
-			);
-		}
+            $.ajax({
+                url: "<%=url('admin/services/oaf/api/dev_visit_list')%>/" + encodeURIComponent(mac),
+                dataType: 'json',
+                timeout: 10000
+            }).done(data => {
+                if (!data || (data.code !== undefined && Number(data.code) !== 2000) || !Array.isArray(data.list)) {
+                    showSuccessMessage('<%:Operation failed%>');
+                    return;
+                }
+                render_visit_list_table(data);
+            }).fail(() => {
+                showSuccessMessage('<%:Operation failed%>');
+            });
+        }
 
 		function showModifyNickname(mac) {
 			var $modal = $('#nicknameModal');
@@ -971,15 +1150,24 @@
 				return;
 			}
 
-			new XHR().post("<%=url('admin/services/oaf/api/set_nickname')%>", 
-			{ mac: mac, nickname: nickname },
-			function(x, data) {
-				console.log('Nickname updated successfully');
-				closeModal('nicknameModal');
-				showSuccessMessage('<%:Operation succeeded%>');
-				getAllUsersData(cur_page);
-			});
-		}
+            $.ajax({
+                url: "<%=url('admin/services/oaf/api/set_nickname')%>",
+                type: 'POST',
+                data: {mac: mac, nickname: nickname},
+                dataType: 'json',
+                timeout: 10000
+            }).done(data => {
+                if (!data || (data.code !== undefined && Number(data.code) !== 2000)) {
+                    showSuccessMessage('<%:Operation failed%>');
+                    return;
+                }
+                closeModal('nicknameModal');
+                showSuccessMessage('<%:Operation succeeded%>');
+                manual_sync_users();
+            }).fail(() => {
+                showSuccessMessage('<%:Operation failed%>');
+            });
+        }
 
 		function closeModal(modalId) {
 			var $modal = $('#' + modalId);
@@ -1027,12 +1215,8 @@
             return;
         }
         
-        var themeTextColor = '#c9d1d9'; 
-        try {
-            var bodyStyle = window.getComputedStyle(document.body);
-            themeTextColor = bodyStyle.color || themeTextColor;
-        } catch(e) {
-        }
+        var themeTextColor = getComputedStyle(document.documentElement).getPropertyValue('--text-color-high').trim() || getComputedStyle(document.body).color;
+        var tooltipBg = getComputedStyle(document.documentElement).getPropertyValue('--background-color-high').trim() || '#fff';
 		var total_time = 0
 		var app_stat_array = new Array();
 		if (data.length == 0){
@@ -1105,6 +1289,8 @@
                 }],
             tooltip: {
                 trigger: 'item',
+                backgroundColor: tooltipBg,
+                textStyle: { color: themeTextColor },
                 formatter: function (parms) {
                     var total_time = get_display_time(parms.data.value);
                     var str = parms.seriesName + "</br>" +
@@ -1166,11 +1352,12 @@
 
 //]]></script>
 
-<div class="user-status-content" style="max-height: 1000px; overflow-y: auto; overflow-x: auto; padding-right: 20px;">
+<div id="user_status_scroll" class="user-status-content" style="padding-right: 20px;">
 
 	<div class="cbi-section cbi-tblsection">
 
 		<div class="user-view-toolbar">
+			<button type="button" class="cbi-button cbi-button-add user-sync-btn" onclick="manual_sync_users()"><%:Refresh%></button>
 			<button type="button" id="view_mode_list_btn" class="view-mode-btn" data-mode="list" title="List Mode" aria-label="List Mode">
 				<span class="view-mode-icon view-mode-icon-list"></span>
 			</button>
@@ -1178,6 +1365,7 @@
 				<span class="view-mode-icon view-mode-icon-card"></span>
 			</button>
 		</div>
+        <div id="user_status_error" role="alert" style="display: none; margin: 8px 0;"><%:Failed to load user data. Click Refresh to retry.%></div>
 
 		<div id="user_table_wrapper" class="user-table-wrapper">
 
@@ -1223,7 +1411,7 @@
 						<%:Actions%>
 				</th>
 			</tr>
-				<tr class="tr">
+				<tr class="tr" id="user_status_loading_row">
 					<td class="td" id="user_status_loading_cell" colspan="11"><em><br />
 							<%:Collecting data...%>
 						</em></td>
@@ -1233,8 +1421,8 @@
 		</div>
 
 		<div id="user_status_cards" class="user-card-grid" style="display: none;"></div>
+		<div id="user_status_scroll_sentinel" aria-hidden="true" style="height: 1px;"></div>
 		
-		<div id="pagination" style="margin-top: 20px;"></div>
 		
 	</div>
 </div>
@@ -1318,7 +1506,7 @@
 	</div>
 </div>
 
-<div id="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000; justify-content: center; align-items: center;">
+<div id="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 10001; justify-content: center; align-items: center;">
 	<div style="background-color: rgba(0, 0, 0, 0.5); padding: 10px; border-radius: 5px; text-align: center; width: 100px; height: 70px; color: white; display: flex; justify-content: center; align-items: center;">
 		<p style="margin: 0;color:white;"><%:Operation succeeded%></p>
 	</div>
@@ -1348,7 +1536,7 @@
         border-radius: 5px 5px 0 0;
         margin-right: 6px;
         transition: all 0.2s ease;
-        color: #475569;
+        color: var(--text-color-medium, #475569);
         font-size: 13px;
     }
     .tab-item.active {
@@ -1375,15 +1563,15 @@
 		width: 600px;
 	}
 
-	.field-label {
-		font-weight: bold;
-		color: #ccc;
-		width: 75px; /* Set a fixed width for all labels */
-		display: inline-block; /* Ensure the width is applied */
-	}
-	.field-value {
-		color: #4CAF50;
-	}
+    .field-label {
+        font-weight: bold;
+        color: var(--text-color-medium, #6b7280);
+        width: 75px; /* Set a fixed width for all labels */
+        display: inline-block; /* Ensure the width is applied */
+    }
+    .field-value {
+        color: #15803d;
+    }
 	
 	.modal-close:hover {
 		color: #ccc;
@@ -1412,7 +1600,7 @@
 		}
 
 		.pc-status-link {
-			color: #f59e0b;
+            color: #92400e;
 			text-decoration: none;
 			cursor: pointer;
 			font-weight: 600;
@@ -1424,7 +1612,7 @@
 		}
 
 		.pc-status-unrestricted {
-			color: #22c55e;
+            color: #15803d;
 			font-weight: 600;
 		}
 
@@ -1446,7 +1634,7 @@
 
 		.pc-rule-label {
 			width: 130px;
-			color: #475569;
+            color: var(--text-color-medium, #475569);
 			flex-shrink: 0;
 		}
 
@@ -1688,11 +1876,12 @@
 		padding: 14px;
 		box-shadow: none;
 		display: flex;
-		flex: 0 0 400px;
+        flex: 0 0 min(400px, 100%);
 		flex-direction: column;
 		gap: 10px;
-		width: 400px;
+        width: min(400px, 100%);
 		max-width: 400px;
+        min-width: 0;
 		box-sizing: border-box;
 	}
 
@@ -1721,7 +1910,7 @@
 	.user-card-title {
 		font-weight: 700;
 		font-size: 15px;
-		color: #0f172a;
+        color: var(--text-color-high, #0f172a);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -1730,7 +1919,7 @@
 	.user-card-subtitle {
 		margin-top: 4px;
 		font-size: 12px;
-		color: #475569;
+        color: var(--text-color-medium, #475569);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -1739,7 +1928,7 @@
 	.user-card-ip {
 		margin-top: 2px;
 		font-size: 12px;
-		color: #475569;
+        color: var(--text-color-medium, #475569);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -1754,7 +1943,7 @@
 	}
 
 	.user-card-status.online {
-		color: #22c55e;
+        color: #15803d;
 		background: rgba(34, 197, 94, 0.18);
 	}
 
@@ -1775,7 +1964,7 @@
 	}
 
 	.user-status-label.online {
-		color: #22c55e;
+        color: #15803d;
 	}
 
 	.user-status-label.active {
@@ -1802,13 +1991,13 @@
 	.user-card-label {
 		flex-shrink: 0;
 		font-size: 12px;
-		color: #475569;
+        color: var(--text-color-medium, #475569);
 	}
 
 	.user-card-value {
 		text-align: right;
 		word-break: break-all;
-		color: #0f172a;
+        color: var(--text-color-high, #0f172a);
 	}
 
 	.user-card-up {
@@ -1817,7 +2006,7 @@
 	}
 
 	.user-card-down {
-		color: #16a34a;
+        color: #15803d;
 		font-weight: 600;
 	}
 
@@ -1863,9 +2052,9 @@
 	}
 
 	.user-block-btn {
-		background: #ef4444 !important;
-		border-color: #dc2626 !important;
-		color: #fff !important;
+        background: #dc2626 !important;
+        border-color: #b91c1c !important;
+        color: #fff !important;
 	}
 
 	.user-block-btn:hover {
@@ -1873,6 +2062,34 @@
 		border-color: #b91c1c !important;
 		color: #fff !important;
 	}
+    #user_status_error { color: #b91c1c; }
+    #traffic-tooltip { border: 1px solid var(--border-color-medium, #d1d5db); }
+    .user-signal-good { color: #15803d; }
+    .user-signal-fair { color: #92400e; }
+    .user-signal-poor { color: #b91c1c; }
+    [data-darkmode="true"] .user-signal-good { color: #86efac; }
+    [data-darkmode="true"] .user-signal-fair { color: #fcd34d; }
+    [data-darkmode="true"] .user-signal-poor { color: #fca5a5; }
+    .user-offline-row { color: var(--text-color-medium, #6b7280); }
+    .user-rate-up { color: #2563eb; }
+    .user-rate-down { color: #15803d; }
+    [data-darkmode="true"] #user_status_error { color: #fca5a5; }
+    [data-darkmode="true"] .field-value,
+    [data-darkmode="true"] .pc-status-unrestricted,
+    [data-darkmode="true"] .user-card-status.online,
+    [data-darkmode="true"] .user-status-label.online,
+    [data-darkmode="true"] .user-card-down,
+    [data-darkmode="true"] .user-rate-down { color: #86efac; }
+    [data-darkmode="true"] .pc-status-link { color: #fcd34d; }
+    [data-darkmode="true"] .pc-status-link:hover { color: #fdba74; }
+    [data-darkmode="true"] .user-card-status.active,
+    [data-darkmode="true"] .user-status-label.active,
+    [data-darkmode="true"] .view-mode-btn.is-active,
+    [data-darkmode="true"] .user-card-up,
+    [data-darkmode="true"] .user-rate-up { color: #93c5fd; }
+    [data-darkmode="true"] .user-card-status.offline,
+    [data-darkmode="true"] .user-status-label.offline { color: var(--text-color-medium, #cbd5e1); }
+    [data-darkmode="true"] .user-card-status.offline { background: var(--background-color-medium, #334155); }
 
 	@media (max-width: 768px) {
 		.user-view-toolbar {

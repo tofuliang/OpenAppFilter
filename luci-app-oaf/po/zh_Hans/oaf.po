@@ -124,6 +124,9 @@ msgstr "下行速率"
 msgid "Refresh"
 msgstr "刷新"
 
+msgid "Failed to load user data. Click Refresh to retry."
+msgstr "加载用户数据失败，请点击刷新重试。"
+
 msgid "Visiting"
 msgstr "正在访问"
 msgid "Band"
@@ -1701,6 +1704,9 @@ msgstr "正在解压"
 
 msgid "Feature"
 msgstr "特征"
+
+msgid "Feature Rules"
+msgstr "特征规则"
 
 msgid "Feature Count"
 msgstr "特征数量"

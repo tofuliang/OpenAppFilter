@@ -3,6 +3,7 @@
  * Copyright(c) 2026 destan19(TT) <www.fanchmwrt.com>  
 */
 #include <unistd.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -779,6 +780,141 @@ static int parse_feature_app_header_text(const char *line, int *app_id,
     *app_id = (int)id;
     strncpy(app_name, name_text, app_name_len - 1);
     app_name[app_name_len - 1] = '\0';
+    return 0;
+}
+
+static int parse_feature_app_id_span(const char *line, size_t line_len, int *app_id)
+{
+    char header[128];
+    char *slash;
+    char *id_text;
+    char *endptr;
+    const char *colon;
+    size_t header_len;
+    long id;
+
+    if (!line || !app_id)
+        return -1;
+
+    colon = memchr(line, ':', line_len);
+    if (!colon)
+        return -1;
+    header_len = (size_t)(colon - line);
+    if (header_len == 0 || header_len >= sizeof(header))
+        return -1;
+
+    memcpy(header, line, header_len);
+    header[header_len] = '\0';
+    slash = strchr(header, '~');
+    if (!slash)
+        return -1;
+    *slash = '\0';
+
+    id_text = trim_feature_space(header);
+    if (!id_text || !id_text[0])
+        return -1;
+
+    id = strtol(id_text, &endptr, 10);
+    endptr = trim_feature_space(endptr);
+    if (id <= 0 || id > INT_MAX || (endptr && endptr[0] != '\0'))
+        return -1;
+
+    *app_id = (int)id;
+    return 0;
+}
+
+static int append_builtin_feature_line(const char *line, size_t line_len,
+                                       int appid, struct json_object *features)
+{
+    size_t i;
+    size_t content_start = 0;
+    size_t content_end = 0;
+    size_t rule_start;
+    int bracket_depth = 0;
+    int bracket_seen = 0;
+    int content_closed = 0;
+    int parsed_appid = 0;
+
+    if (!line || !features || parse_feature_app_id_span(line, line_len, &parsed_appid) < 0 ||
+        parsed_appid != appid)
+        return 0;
+
+    /* The outer '[' belongs to the feature list. Keep nested brackets such
+     * as the regex class in "[*]*$" inside the feature text. */
+    for (i = 0; i < line_len; i++) {
+        if (line[i] == '[') {
+            if (!bracket_seen) {
+                content_start = i + 1;
+                bracket_seen = 1;
+                bracket_depth = 1;
+            } else {
+                bracket_depth++;
+            }
+        } else if (line[i] == ']' && bracket_depth > 0) {
+            bracket_depth--;
+            if (bracket_depth == 0) {
+                content_end = i;
+                content_closed = 1;
+                break;
+            }
+        }
+    }
+
+    if (!bracket_seen || !content_closed || content_end <= content_start)
+        return 1;
+
+    rule_start = content_start;
+    for (i = content_start; i <= content_end; i++) {
+        if (i == content_end || line[i] == ',') {
+            size_t rule_len = i - rule_start;
+            struct json_object *rule_obj = NULL;
+
+            if (rule_len > 0) {
+                rule_obj = json_object_new_string_len(line + rule_start, (int)rule_len);
+                if (!rule_obj)
+                    return -1;
+                if (json_object_array_add(features, rule_obj) != 0) {
+                    json_object_put(rule_obj);
+                    return -1;
+                }
+            }
+            rule_start = i + 1;
+        }
+    }
+
+    return 1;
+}
+
+static int collect_builtin_feature_rules(const char *feature_data, size_t feature_len,
+                                         int appid, struct json_object *features,
+                                         int *found)
+{
+    size_t line_start = 0;
+
+    if (!feature_data || !features || !found)
+        return -1;
+
+    while (line_start < feature_len) {
+        size_t line_end = line_start;
+        size_t line_len;
+        int line_result;
+
+        while (line_end < feature_len && feature_data[line_end] != '\n')
+            line_end++;
+        line_len = line_end - line_start;
+        if (line_len > 0 && feature_data[line_start + line_len - 1] == '\r')
+            line_len--;
+
+        line_result = append_builtin_feature_line(feature_data + line_start, line_len,
+                                                   appid, features);
+        if (line_result < 0)
+            return -1;
+        if (line_result > 0)
+            *found = 1;
+
+        line_start = line_end < feature_len ? line_end + 1 : feature_len;
+    }
+
     return 0;
 }
 
@@ -3286,26 +3422,10 @@ struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
         return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
     }
 
-    rc = sqlite3_open(db_path, &db);
-    if (rc != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
-        json_object_put(data_obj);
-        json_object_put(list_obj);
-        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    if (open_client_visit_db(&db) != 0) {
+        rc = SQLITE_ERROR;
+        goto CLEANUP;
     }
-
-    sqlite3_exec(db,
-                 "CREATE TABLE IF NOT EXISTS app_visit_record ("
-                 "mac TEXT NOT NULL,"
-                 "record_date INTEGER NOT NULL,"
-                 "appid INTEGER NOT NULL,"
-                 "start_time INTEGER NOT NULL,"
-                 "end_time INTEGER NOT NULL,"
-                 "duration INTEGER NOT NULL,"
-                 "action INTEGER NOT NULL"
-                 ");",
-                 NULL, NULL, NULL);
 
     if (mac) {
         strncat(where_sql, " AND mac = ?", sizeof(where_sql) - strlen(where_sql) - 1);
@@ -3350,9 +3470,9 @@ struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
 
     if (total_num > 0 && start_idx < end_idx) {
         snprintf(query_sql, sizeof(query_sql),
-                 "SELECT mac, appid, action, start_time, end_time, duration "
+                 "SELECT mac, appid, action, start_time, end_time, duration, record_id "
                  "FROM app_visit_record%s "
-                 "ORDER BY end_time DESC, duration ASC "
+                 "ORDER BY end_time DESC, duration ASC, record_id ASC "
                  "LIMIT ? OFFSET ?;",
                  where_sql);
         rc = sqlite3_prepare_v2(db, query_sql, -1, &stmt, NULL);
@@ -3371,10 +3491,17 @@ struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
             u_int32_t row_start = (u_int32_t)sqlite3_column_int64(stmt, 3);
             u_int32_t row_end = (u_int32_t)sqlite3_column_int64(stmt, 4);
             int row_duration = sqlite3_column_int(stmt, 5);
-            struct json_object *item_obj = json_object_new_object();
+            const char *row_id = (const char *)sqlite3_column_text(stmt, 6);
+            struct json_object *item_obj;
             client_node_t *node = find_client_node(row_mac ? row_mac : "");
             const char *hostname = "";
             const char *nickname = "";
+
+            if (!row_id) {
+                rc = SQLITE_ERROR;
+                goto CLEANUP;
+            }
+            item_obj = json_object_new_object();
 
             if (node) {
                 hostname = node->hostname;
@@ -3387,6 +3514,7 @@ struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
             json_object_object_add(item_obj, "name", json_object_new_string(get_app_name_by_id(row_appid)));
             json_object_object_add(item_obj, "id", json_object_new_int(row_appid));
             add_app_icon_missing_flag(item_obj, row_appid);
+            json_object_object_add(item_obj, "record_id", json_object_new_string(row_id));
             json_object_object_add(item_obj, "act", json_object_new_int(row_action));
             json_object_object_add(item_obj, "online", json_object_new_int(0));
             json_object_object_add(item_obj, "ft", json_object_new_int(row_start));
@@ -3546,6 +3674,57 @@ struct json_object *fwx_api_dev_list(struct json_object *req_obj) {
     return fwx_gen_api_response_data(API_CODE_SUCCESS, root_obj);
 }
 
+
+struct json_object *fwx_api_get_builtin_feature(struct json_object *req_obj)
+{
+    struct json_object *appid_obj = NULL;
+    struct json_object *data_obj = NULL;
+    struct json_object *features = NULL;
+    const char *feature_data;
+    size_t feature_len = 0;
+    int appid;
+    int found = 0;
+
+    if (!req_obj || !json_object_object_get_ex(req_obj, "appid", &appid_obj) ||
+        !json_object_is_type(appid_obj, json_type_int))
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+
+    appid = json_object_get_int(appid_obj);
+    if (appid <= 0)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+
+    if (ensure_feature_data_loaded() < 0)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+
+    feature_data = fwx_feature_get_data(&feature_len);
+    if (!feature_data || feature_len == 0)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+
+    data_obj = json_object_new_object();
+    features = json_object_new_array();
+    if (!data_obj || !features) {
+        if (data_obj)
+            json_object_put(data_obj);
+        if (features)
+            json_object_put(features);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+
+    if (collect_builtin_feature_rules(feature_data, feature_len, appid, features, &found) < 0) {
+        json_object_put(data_obj);
+        json_object_put(features);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+    if (!found) {
+        json_object_put(data_obj);
+        json_object_put(features);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+
+    json_object_object_add(data_obj, "appid", json_object_new_int(appid));
+    json_object_object_add(data_obj, "features", features);
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
+}
 
 struct json_object *fwx_api_class_list(struct json_object *req_obj) {
     struct json_object *class_list = json_object_new_array();
@@ -8558,6 +8737,7 @@ struct json_object *fwx_api_dev_visit_time(struct json_object *req_obj);
 struct json_object *fwx_api_app_class_visit_time(struct json_object *req_obj);
 struct json_object *fwx_api_dev_list(struct json_object *req_obj);
 struct json_object *fwx_api_class_list(struct json_object *req_obj);
+struct json_object *fwx_api_get_builtin_feature(struct json_object *req_obj);
 struct json_object *fwx_api_get_all_users(struct json_object *req_obj);
 struct json_object *fwx_api_get_parental_control_detail(struct json_object *req_obj);
 struct json_object *fwx_api_get_user_parental_control_rules(struct json_object *req_obj);
@@ -8661,6 +8841,7 @@ static fwx_api_node_t fwx_api_node_list[] = {
     {"app_class_visit_time", fwx_api_app_class_visit_time, 0, FWX_API_METHOD_GET},
     {"dev_list", fwx_api_dev_list, 0, FWX_API_METHOD_GET},
     {"class_list", fwx_api_class_list, 0, FWX_API_METHOD_GET},
+    {"get_builtin_feature", fwx_api_get_builtin_feature, 0, FWX_API_METHOD_GET},
     {"get_all_users", fwx_api_get_all_users, 0, FWX_API_METHOD_GET},
     {"get_parental_control_detail", fwx_api_get_parental_control_detail, 0, FWX_API_METHOD_GET},
     {"get_user_parental_control_rules", fwx_api_get_user_parental_control_rules, 0, FWX_API_METHOD_GET},

@@ -11,6 +11,7 @@
         </ul>
 
         <div id="tab-online-records" class="tab-body active">
+            <div class="record-table-scroll">
             <table class="table cbi-section-table" id="online-record-table" style="table-layout: fixed; width: 100%;">
                 <colgroup>
                     <col class="record-app-col">
@@ -38,7 +39,12 @@
                     <td class="td" colspan="9"><em><br /><%:Loading...%></em></td>
                 </tr>
             </table>
-            <div id="online-pagination" style="margin-top: 12px;"></div>
+            </div>
+            <div class="record-load-state" id="online-record-state" aria-live="polite">
+                <span class="record-loading" style="display:none;"><%:Loading...%></span>
+                <span class="record-error" style="display:none;"><%:Load failed%> <button type="button" class="cbi-button record-retry"><%:Refresh%></button></span>
+            </div>
+            <div class="record-sentinel" id="online-record-sentinel" aria-hidden="true"></div>
         </div>
 
         <div id="tab-history-records" class="tab-body">
@@ -50,6 +56,7 @@
                 <button type="button" class="cbi-button" id="btn-history-reset"><%:Reset%></button>
             </div>
 
+            <div class="record-table-scroll">
             <table class="table cbi-section-table" id="history-record-table" style="table-layout: fixed; width: 100%;">
                 <colgroup>
                     <col class="record-app-col">
@@ -77,7 +84,12 @@
                     <td class="td" colspan="9"><em><br /><%:Loading...%></em></td>
                 </tr>
             </table>
-            <div id="history-pagination" style="margin-top: 12px;"></div>
+            </div>
+            <div class="record-load-state" id="history-record-state" aria-live="polite">
+                <span class="record-loading" style="display:none;"><%:Loading...%></span>
+                <span class="record-error" style="display:none;"><%:Load failed%> <button type="button" class="cbi-button record-retry"><%:Refresh%></button></span>
+            </div>
+            <div class="record-sentinel" id="history-record-sentinel" aria-hidden="true"></div>
         </div>
     </div>
 </div>
@@ -114,6 +126,20 @@
 }
 .tab-body.active {
     display: block;
+}
+.record-table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+.record-table-scroll table {
+    min-width: 1050px;
+}
+.record-load-state {
+    margin-top: 12px;
+}
+.record-sentinel {
+    height: 1px;
 }
 #online-record-table .th, #history-record-table .th {
     padding-top: 12px;
@@ -177,6 +203,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.record-status-filtered, .record-status-offline { color: #b91c1c; }
+.record-status-unfiltered, .record-status-online { color: #15803d; }
+[data-darkmode="true"] .record-status-filtered,
+[data-darkmode="true"] .record-status-offline { color: #fca5a5; }
+[data-darkmode="true"] .record-status-unfiltered,
+[data-darkmode="true"] .record-status-online { color: #86efac; }
 </style>
 
 <script type="text/javascript">
@@ -187,15 +219,22 @@
         unfiltered: '<%:Unfiltered%>',
         online: '<%:Online%>',
         offline: '<%:Offline%>',
-        noData: '<%:No Data%>',
-        previous: '<%:Previous%>',
-        next: '<%:Next%>',
-        total: '<%:Total%>',
-        records: '<%:Records%>'
+        noData: '<%:No Data%>'
     };
-    var online_state = { page: 1, page_size: 15, total_num: 0, total_page: 1 };
-    var history_state = { page: 1, page_size: 15, total_num: 0, total_page: 1 };
-    var history_loaded = false;
+    function record_state(table, status, sentinel, url) {
+        return {
+            table: table, status: status, sentinel: sentinel, url: url,
+            page: 1, page_size: 15, rows: 0, seen: Object.create(null),
+            started: false, loading: false, done: false, error: false,
+            serial: 0, xhr: null, query: {}
+        };
+    }
+    var online_state = record_state('online-record-table', 'online-record-state', 'online-record-sentinel',
+        "<%=url('admin/services/oaf/api/app_record/get_active_app_records')%>");
+    var history_state = record_state('history-record-table', 'history-record-state', 'history-record-sentinel',
+        "<%=url('admin/services/oaf/api/app_record/get_app_history_records')%>");
+    var active_tab = 'online-records';
+    var visible_frame = null;
 
     function pad2(n) {
         n = parseInt(n || 0, 10);
@@ -232,14 +271,14 @@
 
     function render_filter_status(act) {
         return parseInt(act || 0, 10) === 1
-            ? '<span style="color:#F44336;">' + text.filtered + '</span>'
-            : '<span style="color:#22c55e;">' + text.unfiltered + '</span>';
+            ? '<span class="record-status-filtered">' + text.filtered + '</span>'
+            : '<span class="record-status-unfiltered">' + text.unfiltered + '</span>';
     }
 
     function render_online_status(online) {
         return parseInt(online || 0, 10) === 1
-            ? '<span style="color:#22c55e;">' + text.online + '</span>'
-            : '<span style="color:#F44336;">' + text.offline + '</span>';
+            ? '<span class="record-status-online">' + text.online + '</span>'
+            : '<span class="record-status-offline">' + text.offline + '</span>';
     }
 
     function app_display_name(app_id, app_name) {
@@ -260,16 +299,32 @@
             : $('<span>').text('');
 
         $wrap.append($icon).append($('<span>').addClass('record-app-name').text(name));
+        if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+            window.OAFIcon.bindFeatureHover($wrap, {
+                appid: id,
+                name: name,
+                apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                texts: {
+                    loading: '<%:Loading...%>',
+                    error: '<%:Load failed%>',
+                    empty: '<%:No Data%>',
+                    titleSuffix: '<%:Feature Rules%>'
+                }
+            });
+        }
         $cell.empty().append($wrap);
     }
 
-    function render_table(table_id, list) {
-        var $tb = $("#" + table_id);
-        $tb.find("tr:gt(0)").remove();
-        if (!Array.isArray(list) || list.length === 0) {
-            $tb.append('<tr class="tr"><td class="td" colspan="9"><em><br />' + text.noData + '</em></td></tr>');
-            return;
+    function append_rows(state, list) {
+        var $tb = $('#' + state.table);
+        if (state.rows === 0) {
+            $tb.find('tr:gt(0)').remove();
+            if (list.length === 0) {
+                $tb.append('<tr class="tr"><td class="td" colspan="9"><em><br />' + text.noData + '</em></td></tr>');
+                return;
+            }
         }
+        var fragment = document.createDocumentFragment();
         list.forEach(function(item) {
             var app_id = item.id || item.appid || "";
             var app_name = app_display_name(app_id, item.name || item.appname || "");
@@ -296,141 +351,177 @@
                 .append($('<td>').addClass('td').text(format_duration(tt)))
                 .append($('<td>').addClass('td').html(render_online_status(online)))
                 .append($('<td>').addClass('td').html(render_filter_status(act)));
-            $tb.append($row);
+            fragment.appendChild($row[0]);
+        });
+        $tb.append(fragment);
+        state.rows += list.length;
+    }
+
+    function set_load_state(state, kind) {
+        var $status = $('#' + state.status);
+        $status.find('.record-loading').toggle(kind === 'loading');
+        $status.find('.record-error').toggle(kind === 'error');
+    }
+
+    function fail_records(state) {
+        if (state.rows === 0) $('#' + state.table).find('tr:gt(0)').remove();
+        state.error = true;
+        set_load_state(state, 'error');
+    }
+
+    function active_record_key(item) {
+        // Live visits are grouped by MAC, app and action; first_time distinguishes restarts.
+        return String(item.mac || '') + '\u001f' + String(item.id == null ? item.appid : item.id)
+            + '\u001f' + String(item.act == null ? item.latest_action : item.act)
+            + '\u001f' + String(item.ft == null ? item.first_time : item.ft);
+    }
+
+    function record_key(state, item) {
+        if (state === online_state) return active_record_key(item);
+        // Older daemons do not provide IDs; never merge legitimate identical rows.
+        return item.record_id == null || item.record_id === '' ? null : String(item.record_id);
+    }
+
+    // Offset pages are not a snapshot: active reordering or new history rows can skip unseen rows.
+    function request_records(state) {
+        if (state.loading || state.done || state.error) return;
+        var page = state.page;
+        var serial = ++state.serial;
+        state.loading = true;
+        set_load_state(state, 'loading');
+        state.xhr = $.ajax({
+            url: state.url,
+            data: $.extend({}, state.query, { page: page, page_size: state.page_size }),
+            dataType: 'json',
+            timeout: 15000
+        }).done(function(resp) {
+            if (serial !== state.serial) return;
+            var returned_page = parseInt(resp && resp.page, 10);
+            var total_page = parseInt(resp && resp.total_page, 10);
+            if (!resp || !Array.isArray(resp.list) || !(returned_page >= 1) || !(total_page >= 1)
+                || returned_page > page) {
+                fail_records(state);
+                return;
+            }
+
+            // The daemon clamps out-of-range pages if the dataset shrinks.
+            // Re-appending a previous page here would create duplicate rows.
+            if (returned_page < page) {
+                state.done = true;
+            } else {
+                var list = resp.list.filter(function(item) {
+                    var key = record_key(state, item);
+                    if (key === null) return true;
+                    if (state.seen[key]) return false;
+                    state.seen[key] = true;
+                    return true;
+                });
+                append_rows(state, list);
+                state.page = page + 1;
+                state.done = page >= total_page || resp.list.length < state.page_size;
+            }
+            set_load_state(state, 'idle');
+        }).fail(function() {
+            if (serial === state.serial) fail_records(state);
+        }).always(function() {
+            if (serial !== state.serial) return;
+            state.loading = false;
+            state.xhr = null;
+            if (!state.done && !state.error) queue_visible_batch();
         });
     }
 
-    function render_pagination(container_id, state, go_fn) {
-        var $p = $("#" + container_id);
-        if (state.total_page <= 1) {
-            $p.html("");
-            return;
-        }
-
-        var $wrap = $('<div>').css({
-            display: 'flex',
-            gap: '6px',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexWrap: 'wrap'
-        });
-        var $prev = $('<button type="button">').addClass('cbi-button').text(text.previous).prop('disabled', state.page <= 1);
-        var $next = $('<button type="button">').addClass('cbi-button').text(text.next).prop('disabled', state.page >= state.total_page);
-        var $pageText = $('<span>').text(state.page + ' / ' + state.total_page);
-        var $jumpInput = $('<input type="number">')
-            .addClass('cbi-input-text')
-            .attr({ min: 1, max: state.total_page })
-            .css({ width: '72px', height: '28px', boxSizing: 'border-box' })
-            .val(state.page);
-        var $jumpBtn = $('<button type="button">').addClass('cbi-button').text('Go');
-        var $total = $('<span>').css('color', 'var(--text-color-medium, #999)')
-            .text(text.total + ' ' + state.total_num + ' ' + text.records);
-
-        function jump_to_input_page() {
-            var target = parseInt($jumpInput.val(), 10);
-            if (isNaN(target)) {
-                target = state.page;
-            }
-            target = Math.max(1, Math.min(state.total_page, target));
-            $jumpInput.val(target);
-            if (target !== state.page) {
-                go_fn(target);
-            }
-        }
-
-        $prev.on("click", function() {
-            if (state.page > 1) go_fn(state.page - 1);
-        });
-        $next.on("click", function() {
-            if (state.page < state.total_page) go_fn(state.page + 1);
-        });
-        $jumpBtn.on("click", jump_to_input_page);
-        $jumpInput.on("keydown", function(e) {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                jump_to_input_page();
-            }
-        });
-
-        $wrap.append($prev, $pageText, $next, $jumpInput, $jumpBtn, $total);
-        $p.empty().append($wrap);
+    function queue_visible_batch() {
+        if (visible_frame !== null || document.hidden) return;
+        visible_frame = window.requestAnimationFrame
+            ? window.requestAnimationFrame(check_visible_batch)
+            : setTimeout(check_visible_batch, 0);
     }
 
-    function load_online_records() {
-        new XHR().get("<%=url('admin/services/oaf/api/app_record/get_active_app_records')%>", {
-            page: online_state.page,
-            page_size: online_state.page_size
-        }, function(x, data) {
-            var resp = data || {};
-            online_state.total_num = parseInt(resp.total_num || 0, 10);
-            online_state.total_page = parseInt(resp.total_page || 1, 10);
-            online_state.page = parseInt(resp.page || online_state.page, 10);
-            online_state.page_size = parseInt(resp.page_size || online_state.page_size, 10);
-            render_table("online-record-table", resp.list || []);
-            render_pagination("online-pagination", online_state, function(p) {
-                online_state.page = p;
-                load_online_records();
-            });
-        });
+    function check_visible_batch() {
+        visible_frame = null;
+        var state = active_tab === 'history-records' ? history_state : online_state;
+        if (!state.started || state.loading || state.done || state.error || document.hidden) return;
+        var sentinel = document.getElementById(state.sentinel);
+        if (!sentinel) return;
+        var rect = sentinel.getBoundingClientRect();
+        if (rect.bottom >= 0 && rect.top <= (window.innerHeight || document.documentElement.clientHeight) + 160)
+            request_records(state);
     }
 
-    function load_history_records() {
-        new XHR().get("<%=url('admin/services/oaf/api/app_record/get_app_history_records')%>", {
-            mac: $("#q-history-mac").val() || "",
-            start_time: get_ts_from_input("#q-history-start"),
-            end_time: get_ts_from_input("#q-history-end"),
-            page: history_state.page,
-            page_size: history_state.page_size
-        }, function(x, data) {
-            var resp = data || {};
-            history_state.total_num = parseInt(resp.total_num || 0, 10);
-            history_state.total_page = parseInt(resp.total_page || 1, 10);
-            history_state.page = parseInt(resp.page || history_state.page, 10);
-            history_state.page_size = parseInt(resp.page_size || history_state.page_size, 10);
-            render_table("history-record-table", resp.list || []);
-            render_pagination("history-pagination", history_state, function(p) {
-                history_state.page = p;
-                load_history_records();
-            });
-        });
+    function history_filters() {
+        return {
+            mac: $('#q-history-mac').val() || '',
+            start_time: get_ts_from_input('#q-history-start'),
+            end_time: get_ts_from_input('#q-history-end')
+        };
+    }
+
+    function reset_history_records() {
+        var state = history_state;
+        ++state.serial;
+        if (state.xhr) state.xhr.abort();
+        state.xhr = null;
+        state.loading = false;
+        state.done = false;
+        state.error = false;
+        state.page = 1;
+        state.rows = 0;
+        state.seen = Object.create(null);
+        state.query = history_filters();
+        state.started = true;
+        $('#' + state.table).find('tr:gt(0)').remove();
+        request_records(state);
     }
 
     function switch_tab(tab_id) {
-        $(".tab-item").removeClass("active");
-        $('.tab-item[data-tab="' + tab_id + '"]').addClass("active");
-        $(".tab-body").removeClass("active");
-        $("#tab-" + tab_id).addClass("active");
-
-        if (tab_id === "history-records" && !history_loaded) {
-            history_loaded = true;
-            load_history_records();
+        if (tab_id !== 'online-records' && tab_id !== 'history-records') return;
+        active_tab = tab_id;
+        $('.tab-item').removeClass('active');
+        $('.tab-item[data-tab="' + tab_id + '"]').addClass('active');
+        $('.tab-body').removeClass('active');
+        $('#tab-' + tab_id).addClass('active');
+        var state = tab_id === 'history-records' ? history_state : online_state;
+        if (!state.started) {
+            state.started = true;
+            if (state === history_state) state.query = history_filters();
+            $('#' + state.table).find('tr:gt(0)').remove();
+            request_records(state);
+        } else {
+            queue_visible_batch();
         }
     }
 
-    $(".tab-item").on("click", function() {
-        var tab_id = $(this).attr("data-tab");
-        if (!tab_id) return;
-        switch_tab(tab_id);
+    $('.tab-item').on('click', function() {
+        switch_tab($(this).attr('data-tab'));
+    });
+    $('#btn-history-search').on('click', reset_history_records);
+    $('#btn-history-reset').on('click', function() {
+        $('#q-history-mac, #q-history-start, #q-history-end').val('');
+        reset_history_records();
+    });
+    $('.record-retry').on('click', function() {
+        var state = $(this).closest('.record-load-state').attr('id') === online_state.status
+            ? online_state : history_state;
+        if (!state.error) return;
+        state.error = false;
+        request_records(state);
     });
 
-    $("#btn-history-search").on("click", function() {
-        history_state.page = 1;
-        load_history_records();
-    });
-
-    $("#btn-history-reset").on("click", function() {
-        $("#q-history-mac").val("");
-        $("#q-history-start").val("");
-        $("#q-history-end").val("");
-        history_state.page = 1;
-        load_history_records();
-    });
+    var sentinels = [document.getElementById(online_state.sentinel), document.getElementById(history_state.sentinel)];
+    if (window.IntersectionObserver) {
+        var observer = new IntersectionObserver(function(entries) {
+            if (entries.some(function(entry) { return entry.isIntersecting; })) queue_visible_batch();
+        }, { root: null, rootMargin: '0px 0px 160px 0px' });
+        sentinels.forEach(function(sentinel) { observer.observe(sentinel); });
+    } else {
+        $(window).on('scroll.appRecords', queue_visible_batch);
+    }
+    $(window).on('resize.appRecords orientationchange.appRecords', queue_visible_batch);
+    $(document).on('visibilitychange.appRecords', queue_visible_batch);
 
     var urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('tab') === 'history') {
-        switch_tab('history-records');
-    }
-    load_online_records();
+    switch_tab(urlParams.get('tab') === 'history' ? 'history-records' : 'online-records');
 })();
 //]]>
 </script>

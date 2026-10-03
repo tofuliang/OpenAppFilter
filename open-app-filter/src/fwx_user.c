@@ -73,7 +73,6 @@ static void build_client_backup_file_path(const char *mac, char *file_path, size
 static int load_client_backup_from_file(const char *file_path);
 static u_int32_t get_today_start_timestamp_from_ts(u_int32_t timestamp);
 static void build_client_visit_db_path(char *db_path, size_t len);
-static int open_client_visit_db(sqlite3 **db);
 static int save_visit_record_to_db(const char *mac, visit_info_t *visit);
 static int find_oldest_date_in_visit_db(char *oldest_date, size_t len);
 static int delete_visit_records_by_date(const char *date_str);
@@ -825,7 +824,73 @@ static void build_client_visit_db_path(char *db_path, size_t len) {
     snprintf(db_path, len, "%s/client.db", get_history_data_root_dir());
 }
 
-static int open_client_visit_db(sqlite3 **db) {
+static int ensure_app_visit_record_schema(sqlite3 *db) {
+    sqlite3_stmt *stmt = NULL;
+    int rc;
+    int has_id = 0;
+
+    rc = sqlite3_exec(db,
+                      "CREATE TABLE IF NOT EXISTS app_visit_record ("
+                      "record_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                      "mac TEXT NOT NULL,"
+                      "record_date INTEGER NOT NULL,"
+                      "appid INTEGER NOT NULL,"
+                      "start_time INTEGER NOT NULL,"
+                      "end_time INTEGER NOT NULL,"
+                      "duration INTEGER NOT NULL,"
+                      "action INTEGER NOT NULL"
+                      ");", NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        return rc;
+
+    rc = sqlite3_prepare_v2(db, "PRAGMA table_info(app_visit_record);", -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
+        return rc;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        if (name && strcmp(name, "record_id") == 0) {
+            has_id = sqlite3_column_int(stmt, 5) == 1 ? 1 : -1;
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE && rc != SQLITE_ROW)
+        return rc;
+    if (has_id < 0)
+        return SQLITE_SCHEMA;
+
+    if (!has_id) {
+        // A rowid-only legacy table loses identity on VACUUM. Preserve its rows and
+        // existing rowids in a single transaction; future inserts cannot reuse IDs.
+        rc = sqlite3_exec(db,
+                          "BEGIN IMMEDIATE;"
+                          "CREATE TABLE app_visit_record_v2 ("
+                          "record_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                          "mac TEXT NOT NULL, record_date INTEGER NOT NULL, appid INTEGER NOT NULL,"
+                          "start_time INTEGER NOT NULL, end_time INTEGER NOT NULL,"
+                          "duration INTEGER NOT NULL, action INTEGER NOT NULL);"
+                          "INSERT INTO app_visit_record_v2 "
+                          "(record_id, mac, record_date, appid, start_time, end_time, duration, action) "
+                          "SELECT rowid, mac, record_date, appid, start_time, end_time, duration, action "
+                          "FROM app_visit_record;"
+                          "DROP TABLE app_visit_record;"
+                          "ALTER TABLE app_visit_record_v2 RENAME TO app_visit_record;"
+                          "CREATE INDEX idx_app_visit_record_date ON app_visit_record (record_date);"
+                          "CREATE INDEX idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);"
+                          "COMMIT;", NULL, NULL, NULL);
+        if (rc != SQLITE_OK)
+            sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        return rc;
+    }
+
+    return sqlite3_exec(db,
+                        "CREATE INDEX IF NOT EXISTS idx_app_visit_record_date ON app_visit_record (record_date);"
+                        "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);",
+                        NULL, NULL, NULL);
+}
+
+
+int open_client_visit_db(sqlite3 **db) {
     char db_path[512] = {0};
     int rc = SQLITE_OK;
 
@@ -848,19 +913,7 @@ static int open_client_visit_db(sqlite3 **db) {
         return -1;
     }
 
-    rc = sqlite3_exec(*db,
-                      "CREATE TABLE IF NOT EXISTS app_visit_record ("
-                      "mac TEXT NOT NULL,"
-                      "record_date INTEGER NOT NULL,"
-                      "appid INTEGER NOT NULL,"
-                      "start_time INTEGER NOT NULL,"
-                      "end_time INTEGER NOT NULL,"
-                      "duration INTEGER NOT NULL,"
-                      "action INTEGER NOT NULL"
-                      ");"
-                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_date ON app_visit_record (record_date);"
-                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);",
-                      NULL, NULL, NULL);
+    rc = ensure_app_visit_record_schema(*db);
     if (rc != SQLITE_OK) {
         LOG_ERROR("Failed to init sqlite db: %s (rc: %d)\n", db_path, rc);
         sqlite3_close(*db);
@@ -3842,6 +3895,9 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
     
     char file_path[512] = {0};
     sqlite3 *db = NULL;
+    sqlite3_stmt *select_stmt = NULL;
+    sqlite3_stmt *update_stmt = NULL;
+    sqlite3_stmt *mark_stmt = NULL;
     sqlite3_stmt *delete_stmt = NULL;
     sqlite3_stmt *insert_stmt = NULL;
     int rc = SQLITE_OK;
@@ -3862,21 +3918,31 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
     }
     transaction_started = 1;
 
-    rc = sqlite3_prepare_v2(db,
-                            "DELETE FROM app_visit_record WHERE mac = ? AND record_date = ?;",
-                            -1, &delete_stmt, NULL);
+    // Consume each matching old ID once, even when two saved visits have identical fields.
+    rc = sqlite3_exec(db, "CREATE TEMP TABLE archived_visit_ids (record_id INTEGER PRIMARY KEY);", NULL, NULL, NULL);
     if (rc != SQLITE_OK) {
-        LOG_ERROR("Failed to prepare delete statement: %s (rc: %d)\n", file_path, rc);
+        LOG_ERROR("Failed to stage archived visit IDs: %s (rc: %d)\n", file_path, rc);
         goto CLEANUP;
     }
 
-    sqlite3_bind_text(delete_stmt, 1, client->mac, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(delete_stmt, 2, date);
-    rc = sqlite3_step(delete_stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_ERROR("Failed to clear app visit records: %s (rc: %d)\n", file_path, rc);
+    rc = sqlite3_prepare_v2(db,
+                            "SELECT record_id FROM app_visit_record "
+                            "WHERE mac = ? AND record_date = ? AND appid = ? AND start_time = ? AND action = ? "
+                            "AND record_id NOT IN (SELECT record_id FROM archived_visit_ids) "
+                            "ORDER BY record_id LIMIT 1;",
+                            -1, &select_stmt, NULL);
+    if (rc != SQLITE_OK)
         goto CLEANUP;
-    }
+    rc = sqlite3_prepare_v2(db,
+                            "UPDATE app_visit_record SET end_time = ?, duration = ? WHERE record_id = ?;",
+                            -1, &update_stmt, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    rc = sqlite3_prepare_v2(db,
+                            "INSERT INTO archived_visit_ids (record_id) VALUES (?);",
+                            -1, &mark_stmt, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
 
     rc = sqlite3_prepare_v2(db,
                             "INSERT INTO app_visit_record (mac, record_date, appid, start_time, end_time, duration, action) "
@@ -3896,24 +3962,70 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
         }
         
         int duration = p_info->latest_time - p_info->first_time;
+        sqlite3_int64 record_id;
         if (duration == 0)
             duration = 1;
 
-        sqlite3_bind_text(insert_stmt, 1, client->mac, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(insert_stmt, 2, date);
-        sqlite3_bind_int(insert_stmt, 3, p_info->appid);
-        sqlite3_bind_int64(insert_stmt, 4, p_info->first_time);
-        sqlite3_bind_int64(insert_stmt, 5, p_info->latest_time);
-        sqlite3_bind_int(insert_stmt, 6, duration);
-        sqlite3_bind_int(insert_stmt, 7, p_info->action);
+        sqlite3_bind_text(select_stmt, 1, client->mac, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(select_stmt, 2, date);
+        sqlite3_bind_int(select_stmt, 3, p_info->appid);
+        sqlite3_bind_int64(select_stmt, 4, p_info->first_time);
+        sqlite3_bind_int(select_stmt, 5, p_info->action);
+        rc = sqlite3_step(select_stmt);
+        if (rc == SQLITE_ROW) {
+            record_id = sqlite3_column_int64(select_stmt, 0);
+            sqlite3_reset(select_stmt);
+            sqlite3_clear_bindings(select_stmt);
 
-        rc = sqlite3_step(insert_stmt);
-        if (rc != SQLITE_DONE) {
-            LOG_ERROR("Failed to insert app visit record: %s (rc: %d)\n", file_path, rc);
+            sqlite3_bind_int64(update_stmt, 1, p_info->latest_time);
+            sqlite3_bind_int(update_stmt, 2, duration);
+            sqlite3_bind_int64(update_stmt, 3, record_id);
+            rc = sqlite3_step(update_stmt);
+            if (rc != SQLITE_DONE)
+                goto CLEANUP;
+            sqlite3_reset(update_stmt);
+            sqlite3_clear_bindings(update_stmt);
+        } else if (rc == SQLITE_DONE) {
+            sqlite3_reset(select_stmt);
+            sqlite3_clear_bindings(select_stmt);
+
+            sqlite3_bind_text(insert_stmt, 1, client->mac, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(insert_stmt, 2, date);
+            sqlite3_bind_int(insert_stmt, 3, p_info->appid);
+            sqlite3_bind_int64(insert_stmt, 4, p_info->first_time);
+            sqlite3_bind_int64(insert_stmt, 5, p_info->latest_time);
+            sqlite3_bind_int(insert_stmt, 6, duration);
+            sqlite3_bind_int(insert_stmt, 7, p_info->action);
+            rc = sqlite3_step(insert_stmt);
+            if (rc != SQLITE_DONE)
+                goto CLEANUP;
+            record_id = sqlite3_last_insert_rowid(db);
+            sqlite3_reset(insert_stmt);
+            sqlite3_clear_bindings(insert_stmt);
+        } else {
             goto CLEANUP;
         }
-        sqlite3_reset(insert_stmt);
-        sqlite3_clear_bindings(insert_stmt);
+
+        sqlite3_bind_int64(mark_stmt, 1, record_id);
+        rc = sqlite3_step(mark_stmt);
+        if (rc != SQLITE_DONE)
+            goto CLEANUP;
+        sqlite3_reset(mark_stmt);
+        sqlite3_clear_bindings(mark_stmt);
+    }
+
+    rc = sqlite3_prepare_v2(db,
+                            "DELETE FROM app_visit_record WHERE mac = ? AND record_date = ? "
+                            "AND record_id NOT IN (SELECT record_id FROM archived_visit_ids);",
+                            -1, &delete_stmt, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    sqlite3_bind_text(delete_stmt, 1, client->mac, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(delete_stmt, 2, date);
+    rc = sqlite3_step(delete_stmt);
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR("Failed to clear stale app visit records: %s (rc: %d)\n", file_path, rc);
+        goto CLEANUP;
     }
 
     rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
@@ -3927,6 +4039,12 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
              client->mac, date_str, visit_count, file_path);
 
 CLEANUP:
+    if (select_stmt)
+        sqlite3_finalize(select_stmt);
+    if (update_stmt)
+        sqlite3_finalize(update_stmt);
+    if (mark_stmt)
+        sqlite3_finalize(mark_stmt);
     if (delete_stmt)
         sqlite3_finalize(delete_stmt);
     if (insert_stmt)

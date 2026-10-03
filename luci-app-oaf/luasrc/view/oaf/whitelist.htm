@@ -5,9 +5,9 @@ local has_app_filter = nfs.access("/etc/config/appfilter")
 local has_access_control = nfs.access("/etc/config/macfilter")
 local has_record = nfs.access("/etc/config/fwx_record")
 %>
-<link rel="stylesheet" href="<%=resource%>/oaf/css/common.css">
+<link rel="stylesheet" href="<%=resource%>/oaf/css/common.css?v=20261001-darkfix2">
 <script src="<%=resource%>/oaf/jquery-3.7.1.min.js"></script>
-<script src="<%=resource%>/oaf/common.js"></script>
+<script src="<%=resource%>/oaf/common.js?v=20261001-darkfix2"></script>
 
 <style>
     .oaf-whitelist-tip {
@@ -236,6 +236,16 @@ local has_record = nfs.access("/etc/config/fwx_record")
         text-align: center;
     }
 
+    .oaf-whitelist-table-empty {
+        padding: 30px;
+        color: #999;
+        text-align: center;
+    }
+
+    html[data-oaf-dark="true"] .oaf-whitelist-table-empty {
+        color: #9ca3af;
+    }
+
     .oaf-whitelist-modal-buttons {
         display: flex;
         justify-content: flex-end;
@@ -422,7 +432,7 @@ function renderWhitelistTable(type) {
 
     tableBody.innerHTML = '';
     if (config.list.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:30px;color:#999;">' + whitelistText.noEntries + '</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="5" class="oaf-whitelist-table-empty">' + whitelistText.noEntries + '</td></tr>';
         return;
     }
 
@@ -613,7 +623,7 @@ $(function() {
         <div class="oaf-whitelist-table-wrap">
             <table class="common-table oaf-whitelist-table">
                 <thead><tr><th><%:No.%></th><th><%:MAC Address%></th><th><%:Hostname%></th><th><%:Nickname%></th><th><%:Operation%></th></tr></thead>
-                <tbody id="appFilterWhitelistTableBody"><tr><td colspan="5" style="text-align:center;padding:30px;color:#999;"><%:Loading...%></td></tr></tbody>
+                <tbody id="appFilterWhitelistTableBody"><tr><td colspan="5" class="oaf-whitelist-table-empty"><%:Loading...%></td></tr></tbody>
             </table>
         </div>
     </div>
@@ -628,7 +638,7 @@ $(function() {
         <div class="oaf-whitelist-table-wrap">
             <table class="common-table oaf-whitelist-table">
                 <thead><tr><th><%:No.%></th><th><%:MAC Address%></th><th><%:Hostname%></th><th><%:Nickname%></th><th><%:Operation%></th></tr></thead>
-                <tbody id="accessControlWhitelistTableBody"><tr><td colspan="5" style="text-align:center;padding:30px;color:#999;"><%:Loading...%></td></tr></tbody>
+                <tbody id="accessControlWhitelistTableBody"><tr><td colspan="5" class="oaf-whitelist-table-empty"><%:Loading...%></td></tr></tbody>
             </table>
         </div>
     </div>
@@ -643,7 +653,7 @@ $(function() {
         <div class="oaf-whitelist-table-wrap">
             <table class="common-table oaf-whitelist-table">
                 <thead><tr><th><%:No.%></th><th><%:MAC Address%></th><th><%:Hostname%></th><th><%:Nickname%></th><th><%:Operation%></th></tr></thead>
-                <tbody id="recordWhitelistTableBody"><tr><td colspan="5" style="text-align:center;padding:30px;color:#999;"><%:Loading...%></td></tr></tbody>
+                <tbody id="recordWhitelistTableBody"><tr><td colspan="5" class="oaf-whitelist-table-empty"><%:Loading...%></td></tr></tbody>
             </table>
         </div>
     </div>

@@ -140,9 +140,9 @@
 		var statusElement = document.getElementById('basic_info_status');
 		if (user.online == 1) {
 			if (user.active == 1) {
-				statusElement.innerHTML = '<span style="color: #22c55e;"><%:Active%></span>';
-			} else {
-				statusElement.innerHTML = '<span style="color: #3b82f6;"><%:Online%></span>';
+                statusElement.innerHTML = '<span class="detail-status-positive"><%:Active%></span>';
+            } else {
+                statusElement.innerHTML = '<span class="detail-status-online"><%:Online%></span>';
 			}
 		} else {
 			statusElement.textContent = '<%:Offline%>';
@@ -446,12 +446,12 @@
 		for (var i = 0; i < records.length; i++) {
 			var record = records[i];
 			var typeText = record.type == 0 ? '<%:Online Event%>' : '<%:Offline Event%>';
-			var typeClass = record.type == 0 ? 'style="color: #22c55e;"' : 'style="color: #F44336;"';
+            var typeClass = record.type == 0 ? 'class="td detail-status-positive"' : 'class="td detail-status-negative"';
 			var timeStr = record.time_str || new Date(record.timestamp * 1000).toLocaleString('zh-CN');
 			var durationStr = record.duration_str || formatDuration(record.duration);
 			
 			html += '<tr class="tr">';
-			html += '<td class="td" ' + typeClass + '>' + typeText + '</td>';
+            html += '<td ' + typeClass + '>' + typeText + '</td>';
 			html += '<td class="td">' + timeStr + '</td>';
 			html += '<td class="td">' + durationStr + '</td>';
 			html += '</tr>';
@@ -561,12 +561,8 @@
 			return;
 		}
 		
-		var themeTextColor = '#c9d1d9'; 
-		try {
-			var bodyStyle = window.getComputedStyle(document.body);
-			themeTextColor = bodyStyle.color || themeTextColor;
-		} catch(e) {
-		}
+        var themeTextColor = getComputedStyle(document.documentElement).getPropertyValue('--text-color-high').trim() || getComputedStyle(document.body).color;
+        var chartBackground = getComputedStyle(document.documentElement).getPropertyValue('--background-color-high').trim() || '#fff';
 		
 		var palette = [
 			'#34d399',
@@ -639,6 +635,8 @@
 				}],
 			tooltip: {
 				trigger: 'item',
+                backgroundColor: chartBackground,
+                textStyle: { color: themeTextColor },
 				formatter: function (parms) {
 					var total_time = get_display_time(parms.data.value);
 					var str = parms.seriesName + "</br>" +
@@ -669,7 +667,7 @@
 					avoidLabelOverlap: true,
 					itemStyle: {
 						borderRadius: 1,
-						borderColor: "#fff",
+                        borderColor: chartBackground,
 						borderWidth: 1,
 					},
 					label: {
@@ -734,21 +732,34 @@
 			}
 			for (var i = 0; i < visit_list.length; i++) {
 				var action_status = visit_list[i].act == 1
-					? '<span style="color:#F44336;"><%:Filtered%></span>'
-					: '<span style="color:#22c55e;"><%:Unfiltered%></span>';
+                    ? '<span class="detail-status-negative"><%:Filtered%></span>'
+                    : '<span class="detail-status-positive"><%:Unfiltered%></span>';
 				var hostname = visit_list[i].hostname == "" || visit_list[i].hostname == "*" ? "--" : visit_list[i].hostname;
 				var tr = tb.insertRow(-1);
 				tr.className = 'tr';
 
-					var appId = String(visit_list[i].id || '');
-					var appName = get_app_display_name(appId, visit_list[i].name);
-					var $iconCell = $(tr.insertCell(-1));
-				var $div = $('<div>').css({height:'24px', display:'flex', alignItems:'center', gap:'4px', minWidth:0});
-				var $iconSpan = window.OAFIcon
-					? window.OAFIcon.createAppIcon(appId, appName, '<%=resource%>', { size:'20px', radius:'5px', icon: visit_list[i].icon })
-					: $('<span>');
-				$div.append($iconSpan).append($('<span>').text(appName));
-				$iconCell.append($div);
+                    var appId = String(visit_list[i].id || '');
+                    var appName = get_app_display_name(appId, visit_list[i].name);
+                    var $iconCell = $(tr.insertCell(-1));
+                var $div = $('<div>').css({height:'24px', display:'flex', alignItems:'center', gap:'4px', minWidth:0});
+                var $iconSpan = window.OAFIcon
+                    ? window.OAFIcon.createAppIcon(appId, appName, '<%=resource%>', { size:'20px', radius:'5px', icon: visit_list[i].icon })
+                    : $('<span>');
+                $div.append($iconSpan).append($('<span>').text(appName));
+                if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+                    window.OAFIcon.bindFeatureHover($div, {
+                        appid: appId,
+                        name: appName,
+                        apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                        texts: {
+                            loading: '<%:Loading...%>',
+                            error: '<%:Load failed%>',
+                            empty: '<%:No Data%>',
+                            titleSuffix: '<%:Feature Rules%>'
+                        }
+                    });
+                }
+                $iconCell.append($div);
 
 				var first_time_date = new Date(visit_list[i].ft * 1000); // Assuming first_time is in seconds
 				var first_time_str = first_time_date.toLocaleString(); // Convert to local date string
@@ -776,8 +787,8 @@
 
 				tr.insertCell(-1).innerHTML = total_time_str;
 				var online_status = visit_list[i].online == 1
-					? '<span style="color:#22c55e;"><%:Online%></span>'
-					: '<span style="color:#F44336;"><%:Offline%></span>';
+                    ? '<span class="detail-status-positive"><%:Online%></span>'
+                    : '<span class="detail-status-negative"><%:Offline%></span>';
 				tr.insertCell(-1).innerHTML = online_status;
 				tr.insertCell(-1).innerHTML = action_status;
 				var childs = tr.childNodes;
@@ -838,7 +849,7 @@
 		
 		var startRecord = (visit_cur_page - 1) * visit_page_size + 1;
 		var endRecord = Math.min(visit_cur_page * visit_page_size, visit_total_num);
-		html += '<span style="margin-left: 20px; color: #999;"><%:Total%> ' + visit_total_num + ' <%:Records%>，<%:Showing%> ' + startRecord + '-' + endRecord + '</span>';
+        html += '<span class="visit-pagination-summary" style="margin-left: 20px;"><%:Total%> ' + visit_total_num + ' <%:Records%>，<%:Showing%> ' + startRecord + '-' + endRecord + '</span>';
 		
 		html += '</div>';
 		paginationDiv.innerHTML = html;
@@ -890,7 +901,10 @@
 			}
 		}
 		
-		var textColor = window.getComputedStyle(document.body).color || '#ffffff';
+        var chartStyle = getComputedStyle(document.documentElement);
+        var textColor = chartStyle.getPropertyValue('--text-color-high').trim() || getComputedStyle(document.body).color;
+        var splitColor = chartStyle.getPropertyValue('--border-color-low').trim() || 'rgba(0, 0, 0, 0.1)';
+        var tooltipBg = chartStyle.getPropertyValue('--background-color-high').trim() || '#fff';
 		
 		var option = {
 			animation: true,  
@@ -903,6 +917,8 @@
 			},
 			tooltip: {
 				trigger: 'axis',
+                backgroundColor: tooltipBg,
+                textStyle: { color: textColor },
 				axisPointer: {
 					type: 'shadow'
 				},
@@ -981,7 +997,7 @@
 			},
 			splitLine: {
 				lineStyle: {
-					color: 'rgba(255, 255, 255, 0.1)'
+                    color: splitColor
 				}
 			}
 		},
@@ -1084,7 +1100,10 @@
 			});
 		}
 		
-		var textColor = window.getComputedStyle(document.body).color || '#ffffff';
+        var chartStyle = getComputedStyle(document.documentElement);
+        var textColor = chartStyle.getPropertyValue('--text-color-high').trim() || getComputedStyle(document.body).color;
+        var splitColor = chartStyle.getPropertyValue('--border-color-low').trim() || 'rgba(0, 0, 0, 0.1)';
+        var tooltipBg = chartStyle.getPropertyValue('--background-color-high').trim() || '#fff';
 		
 		var option = {
 			animation: true,  
@@ -1097,6 +1116,8 @@
 			},
 			tooltip: {
 				trigger: 'axis',
+                backgroundColor: tooltipBg,
+                textStyle: { color: textColor },
 				axisPointer: {
 					type: 'shadow'
 				},
@@ -1172,7 +1193,7 @@
 			},
 			splitLine: {
 				lineStyle: {
-					color: 'rgba(255, 255, 255, 0.1)'
+                    color: splitColor
 				}
 			}
 		},
@@ -1756,6 +1777,18 @@
 <div id="nickname_toast" class="nickname-toast"></div>
 
 <style>
+    .detail-status-positive { color: #15803d; }
+    .detail-status-online { color: #2563eb; }
+    .detail-status-negative { color: #b91c1c; }
+    .visit-pagination-summary { color: var(--text-color-medium, #6b7280); }
+    [data-darkmode="true"] .detail-status-positive { color: #86efac; }
+    [data-darkmode="true"] .detail-status-online,
+    [data-darkmode="true"] .behavior-whitelist-hint { color: #93c5fd; }
+    [data-darkmode="true"] .detail-status-negative,
+    [data-darkmode="true"] .behavior-permission-blocked { color: #fca5a5; }
+    [data-darkmode="true"] .behavior-status-match,
+    [data-darkmode="true"] .behavior-permission-unlimited { color: #86efac; }
+    [data-darkmode="true"] .behavior-permission-app { color: #fcd34d; }
 	.user-detail-header {
 		display: flex;
 		align-items: center;
@@ -1861,7 +1894,7 @@
 		border: 1px solid rgba(59, 130, 246, 0.35);
 		border-radius: 5px;
 		background: rgba(59, 130, 246, 0.08);
-		color: #3b82f6;
+        color: #1d4ed8;
 	}
 
 	.behavior-whitelist-hint-item + .behavior-whitelist-hint-item {
@@ -1909,30 +1942,30 @@
 	}
 
 	.behavior-status-match {
-		color: #22c55e;
+        color: #15803d;
 		font-weight: 600;
 	}
 
 	.behavior-status-unmatch {
-		color: #94a3b8;
+        color: var(--text-color-medium, #64748b);
 	}
 
 	.behavior-status-muted {
-		color: #94a3b8;
+        color: var(--text-color-medium, #64748b);
 	}
 
 	.behavior-permission-unlimited {
-		color: #22c55e;
+        color: #15803d;
 		font-weight: 600;
 	}
 
 	.behavior-permission-app {
-		color: #f59e0b;
+        color: #92400e;
 		font-weight: 600;
 	}
 
 	.behavior-permission-blocked {
-		color: #ef4444;
+        color: #b91c1c;
 		font-weight: 600;
 	}
 

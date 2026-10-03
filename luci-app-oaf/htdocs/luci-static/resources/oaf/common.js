@@ -191,6 +191,78 @@ function validateNetmask(mask) {
     return /^1+0*$/.test(binary);
 }
 
+function oafRelativeLuminance(rgb) {
+    const channels = rgb.map(value => {
+        const channel = value / 255;
+        return channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function oafBackgroundIsDark(element) {
+    if (!element) return null;
+    const match = window.getComputedStyle(element).backgroundColor.match(/rgba?\(([^)]+)\)/);
+    if (!match) return null;
+    const parts = match[1].split(',').map(part => parseFloat(part));
+    const alpha = parts.length > 3 ? parts[3] : 1;
+    if (!(alpha > 0.5)) return null;
+    return oafRelativeLuminance(parts) < 0.5;
+}
+
+function oafPageIsDark() {
+    const candidates = [
+        document.body,
+        document.documentElement,
+        document.querySelector('.main'),
+        document.querySelector('#maincontent'),
+        document.querySelector('.main-content')
+    ];
+    for (const candidate of candidates) {
+        const dark = oafBackgroundIsDark(candidate);
+        if (dark !== null) return dark;
+    }
+    const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    return !!(media && media.matches);
+}
+
+/* Argon follows prefers-color-scheme in normal mode but may also force its
+   dark stylesheet from UCI configuration. Detect the rendered page instead of
+   relying on an Argon-specific marker. */
+function oafSyncPageTheme() {
+    const root = document.documentElement;
+    if (!root || root.hasAttribute('data-darkmode')) return;
+    if (oafPageIsDark()) {
+        root.setAttribute('data-oaf-dark', 'true');
+    } else {
+        root.removeAttribute('data-oaf-dark');
+    }
+}
+
+window.oafSyncPageTheme = oafSyncPageTheme;
+window.oafPageIsDark = oafPageIsDark;
+
+(function () {
+    oafSyncPageTheme();
+    document.addEventListener('DOMContentLoaded', oafSyncPageTheme);
+
+    const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    if (media) {
+        if (typeof media.addEventListener === 'function') {
+            media.addEventListener('change', oafSyncPageTheme);
+        } else if (typeof media.addListener === 'function') {
+            media.addListener(oafSyncPageTheme);
+        }
+    }
+
+    if (window.MutationObserver) {
+        const observer = new MutationObserver(oafSyncPageTheme);
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+        if (document.head) {
+            observer.observe(document.head, { childList: true });
+        }
+    }
+})();
+
 window.showCommonModal = showCommonModal;
 window.showSuccess = showSuccess;
 window.showWarning = showWarning;

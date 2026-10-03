@@ -8,6 +8,20 @@
         margin-top: 20px;
     }
 
+    [data-darkmode="true"] .rules-list .common-table {
+        color: var(--text-color-high, #1f2937);
+        background: var(--background-color-high, #fff);
+    }
+
+    [data-darkmode="true"] .rules-list .common-table th,
+    [data-darkmode="true"] .rules-list .common-table td {
+        border-color: var(--border-color-low, #d1d5db);
+    }
+
+    [data-darkmode="true"] .rules-list .common-table th {
+        background: var(--background-color-low, #f5f5f5);
+    }
+
     .rules-toolbar {
         display: flex;
         justify-content: space-between;
@@ -19,6 +33,7 @@
     .rules-toolbar h3 {
         margin: 0;
         min-width: 0;
+        color: var(--text-color-high, inherit);
     }
 
     .rules-toolbar #btn-add-rule {
@@ -68,7 +83,7 @@
     }
     
     .more-time-btn:hover {
-        background: #898a8a;
+        background: #626262;
     }
     
     .time-chart-inline {
@@ -134,6 +149,11 @@
         pointer-events: none;
         max-width: 90vw;
         overflow-x: auto;
+    }
+
+    .time-chart-popup h4,
+    .time-chart-tooltip h4 {
+        color: var(--text-color-high, #1f2937);
     }
     
     .time-chart-container {
@@ -546,6 +566,10 @@
         padding: 40px;
         color: #999;
     }
+
+    [data-darkmode="true"] .empty-state {
+        color: #c0c0c0;
+    }
     
     #add-rule-modal {
         display: none;
@@ -637,9 +661,22 @@
         border-color: var(--border-color-medium, #d1d5db);
     }
 
+    #add-rule-modal .week-limit-input {
+        background: var(--background-color-high, #fff);
+        color: var(--text-color-high, #1f2937);
+        border: 1px solid var(--border-color-medium, #d1d5db);
+    }
+
     #add-rule-modal .form-group select option {
         background: var(--background-color-high, #fff);
         color: var(--text-color-high, #1f2937);
+    }
+
+    [data-darkmode="true"] #add-rule-modal .form-group input[type="text"],
+    [data-darkmode="true"] #add-rule-modal .form-group input[type="time"],
+    [data-darkmode="true"] #add-rule-modal .form-group select,
+    [data-darkmode="true"] #add-rule-modal .week-limit-input {
+        color-scheme: dark;
     }
 
     #add-rule-modal .time-rule-item,
@@ -649,10 +686,174 @@
         color: var(--text-color-high, #1f2937);
         border-color: var(--border-color-low, #d1d5db);
     }
+
+    [data-darkmode="true"] .btn-primary,
+    [data-darkmode="true"] .btn-edit {
+        background: #0069d9;
+        color: #fff;
+    }
+
+    [data-darkmode="true"] .btn-add-time {
+        background: #218838;
+        color: #fff;
+    }
+
+    [data-darkmode="true"] .btn-primary:hover,
+    [data-darkmode="true"] .btn-edit:hover {
+        background: #0056b3;
+    }
+    /* Argon dark.css does not expose data-darkmode or theme variables. The class is
+       synchronized from the root page body by the script below. */
+    #add-rule-modal.oaf-argon-dark .modal-content {
+        background: #1e1e1e !important;
+        color: #f3f4f6 !important;
+        border-color: #4b5563 !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .modal-content h3 {
+        background: transparent !important;
+        color: #f8fafc !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .modal-close,
+    #add-rule-modal.oaf-argon-dark .form-group label,
+    #add-rule-modal.oaf-argon-dark .category-name {
+        color: #e5e7eb !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .modal-close:hover,
+    #add-rule-modal.oaf-argon-dark .category-count,
+    #add-rule-modal.oaf-argon-dark .category-select-all-container label,
+    #add-rule-modal.oaf-argon-dark .form-group > div[style*="color: #999"] {
+        color: #94a3b8 !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .rule-form {
+        background: transparent !important;
+        border-color: #475569 !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .form-group input[type="text"],
+    #add-rule-modal.oaf-argon-dark .form-group input[type="time"],
+    #add-rule-modal.oaf-argon-dark .form-group select,
+    #add-rule-modal.oaf-argon-dark .week-limit-input {
+        background: #111827 !important;
+        color: #f9fafb !important;
+        border-color: #64748b !important;
+        color-scheme: dark;
+    }
+
+    #add-rule-modal.oaf-argon-dark .form-group select option {
+        background: #111827 !important;
+        color: #f9fafb !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .time-rule-item,
+    #add-rule-modal.oaf-argon-dark .app-selection-container,
+    #add-rule-modal.oaf-argon-dark .app-items,
+    #add-rule-modal.oaf-argon-dark .category-header {
+        background: #111827 !important;
+        color: #e5e7eb !important;
+        border-color: #475569 !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .app-item,
+    #add-rule-modal.oaf-argon-dark .time-rule-weekday label {
+        color: #e5e7eb !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark input[type="checkbox"] {
+        appearance: none !important;
+        -webkit-appearance: none !important;
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        flex: 0 0 16px;
+        border: 1px solid #94a3b8 !important;
+        border-radius: 3px;
+        background: #0f172a !important;
+        cursor: pointer;
+        vertical-align: middle;
+        transition: none !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark input[type="checkbox"]:checked {
+        background: #2563eb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23fff' stroke-width='2' d='m3 8 3 3 7-7'/%3E%3C/svg%3E") center / 12px 12px no-repeat !important;
+        border-color: #60a5fa !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark input[type="checkbox"]:focus-visible {
+        outline: 2px solid #60a5fa;
+        outline-offset: 2px;
+    }
+
+    #add-rule-modal.oaf-argon-dark .category-select-all-container {
+        color: #e5e7eb !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .btn-primary,
+    #add-rule-modal.oaf-argon-dark .btn-edit {
+        background: #2563eb !important;
+        color: #fff !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .btn-add-time {
+        background: #15803d !important;
+        color: #fff !important;
+    }
+
+    #add-rule-modal.oaf-argon-dark .btn-primary:hover,
+    #add-rule-modal.oaf-argon-dark .btn-edit:hover {
+        background: #1d4ed8 !important;
+    }
 </style>
 
 <script type="text/javascript">//<![CDATA[
 $(document).ready(function() {
+    function isArgonDarkTheme() {
+        var body = document.body;
+        if (!body) {
+            return false;
+        }
+        var backgroundColor = window.getComputedStyle(body).backgroundColor;
+        var match = backgroundColor.match(/^rgba?\(([^)]+)\)$/i);
+        if (!match) {
+            return false;
+        }
+        var channels = match[1].split(/\s*,\s*/);
+        if (channels.length < 3) {
+            return false;
+        }
+        var alpha = channels.length > 3 ? parseFloat(channels[3]) : 1;
+        if (!isFinite(alpha) || alpha <= 0) {
+            return false;
+        }
+        var red = parseFloat(channels[0]);
+        var green = parseFloat(channels[1]);
+        var blue = parseFloat(channels[2]);
+        if (![red, green, blue].every(isFinite)) {
+            return false;
+        }
+        return (red * 299 + green * 587 + blue * 114) / 1000 < 128;
+    }
+
+    function updateArgonRuleModalTheme() {
+        $('#add-rule-modal').toggleClass('oaf-argon-dark', isArgonDarkTheme());
+    }
+
+    updateArgonRuleModalTheme();
+    var argonDarkMedia = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+    if (argonDarkMedia) {
+        var refreshArgonRuleModalTheme = function() {
+            window.setTimeout(updateArgonRuleModalTheme, 0);
+        };
+        if (typeof argonDarkMedia.addEventListener === 'function') {
+            argonDarkMedia.addEventListener('change', refreshArgonRuleModalTheme);
+        } else if (typeof argonDarkMedia.addListener === 'function') {
+            argonDarkMedia.addListener(refreshArgonRuleModalTheme);
+        }
+    }
+
     var _NoRulesConfigured = '<%:No rules configured%>';
     var _Name = '<%:Name%>';
     var _Mode = '<%:Mode%>';
@@ -1481,6 +1682,7 @@ $(document).ready(function() {
             renderWeekLimitConfig(rule.flow_limit, 3);
         }
         
+        updateArgonRuleModalTheme();
         $('#add-rule-modal').addClass('show');
         $('#rule-form-title').text(_EditRule);
         
@@ -1993,6 +2195,7 @@ $(document).ready(function() {
         return false;
     });
     function showAddRuleModal() {
+        updateArgonRuleModalTheme();
         $('#add-rule-modal').addClass('show');
         
         resetRuleForm();

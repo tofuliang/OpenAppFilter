@@ -8,14 +8,9 @@ local function normalize_page(value, default_value)
     return n
 end
 
-local function write_empty_list(page, page_size)
-    luci.http.write_json({
-        total_num = 0,
-        total_page = 1,
-        page = page,
-        page_size = page_size,
-        list = {}
-    })
+local function write_backend_error()
+    luci.http.status(503, "Service Unavailable")
+    luci.http.write_json({ error = "Service Unavailable" })
 end
 
 function index()
@@ -43,7 +38,7 @@ function get_active_app_records()
     if resp_obj and resp_obj.code == 2000 and resp_obj.data then
         luci.http.write_json(resp_obj.data)
     else
-        write_empty_list(page, page_size)
+        write_backend_error()
     end
 end
 
@@ -78,6 +73,6 @@ function get_app_history_records()
     if resp_obj and resp_obj.code == 2000 and resp_obj.data then
         luci.http.write_json(resp_obj.data)
     else
-        write_empty_list(page, page_size)
+        write_backend_error()
     end
 end

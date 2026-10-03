@@ -5,7 +5,8 @@ function index()
 		template("oaf/feature"),
 		_("Feature Library"), 80).dependent = true
 	entry({"admin", "services", "oaf", "feature", "info"}, call("get_feature_info"), nil).leaf = true
-	entry({"admin", "services", "oaf", "feature", "class_list"}, call("get_feature_class_list"), nil).leaf = true
+    entry({"admin", "services", "oaf", "feature", "class_list"}, call("get_feature_class_list"), nil).leaf = true
+    entry({"admin", "services", "oaf", "feature", "builtin_detail"}, call("get_builtin_feature_detail"), nil).leaf = true
 	entry({"admin", "services", "oaf", "feature", "online_config"}, call("get_feature_online_config"), nil).leaf = true
 	entry({"admin", "services", "oaf", "feature", "online_save"}, call("set_feature_online_config"), nil).leaf = true
 	entry({"admin", "services", "oaf", "feature", "online_list"}, call("get_feature_online_list"), nil).leaf = true
@@ -104,15 +105,29 @@ function set_custom_feature_list()
 end
 
 function get_feature_class_list()
-	local json = require "luci.jsonc"
-	local util = require "luci.util"
-	local http = require "luci.http"
-	local resp = util.ubus("fwx", "common", {CopyRight = "www.fanchmwrt.com", api = "class_list", data = {}})
+    local json = require "luci.jsonc"
+    local util = require "luci.util"
+    local http = require "luci.http"
+    local resp = util.ubus("fwx", "common", {CopyRight = "www.fanchmwrt.com", api = "class_list", data = {}})
 
-	http.prepare_content("application/json")
-	if resp and resp.code == 2000 and resp.data then
-		http.write(json.stringify(resp.data))
-	else
-		http.write(json.stringify({class_list = {}}))
-	end
+    http.prepare_content("application/json")
+    if resp and resp.code == 2000 and resp.data then
+        http.write(json.stringify(resp.data))
+    else
+        http.write(json.stringify({class_list = {}}))
+    end
+end
+
+function get_builtin_feature_detail()
+    local json = require "luci.jsonc"
+    local http = require "luci.http"
+    local appid = tonumber(http.formvalue("appid") or "")
+
+    if not appid or appid ~= math.floor(appid) then
+        http.prepare_content("application/json")
+        http.write(json.stringify({code = 4000, data = {error = "invalid appid"}}))
+        return
+    end
+
+    write_fwx_response("get_builtin_feature", {appid = appid})
 end

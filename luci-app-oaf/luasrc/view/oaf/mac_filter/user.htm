@@ -9,7 +9,7 @@
     
     .user-list th, .user-list td {
         padding: 8px;
-        border: 1px solid #ddd;
+        border: 1px solid var(--border-color-low, #ddd);
         text-align: left;
     }
     
@@ -30,7 +30,7 @@
 
     
     /* Modal styles */
-    .modal {
+    #whitelistModal {
         display: none;
         position: fixed;
         top: 0;
@@ -41,8 +41,23 @@
         z-index: 1000;
     }
     
-    .modal-content {
-        background-color: white;
+    #userModal .modal-content {
+        background-color: #2d2d2d;
+        color: #fff;
+    }
+
+    #whitelistModal .modal-content {
+        background-color: var(--background-color-high, white);
+        color: var(--text-color-high, #333);
+    }
+
+    [data-darkmode="true"] #userModal .modal-content {
+        background-color: var(--background-color-high, #2d2d2d);
+        color: var(--text-color-high, #fff);
+    }
+
+    #userModal .modal-content,
+    #whitelistModal .modal-content {
         margin: 15% auto;
         padding: 20px;
         border-radius: 5px;
@@ -56,11 +71,32 @@
         margin: 15px 0;
     }
     
-    .user-item {
+    #userModal .modal-user-item,
+    #whitelistModal .modal-user-item {
         padding: 8px;
-        border-bottom: 1px solid #eee;
+        border-bottom: 1px solid var(--border-color-low, #eee);
         display: flex;
         align-items: center;
+    }
+
+    #userModal .modal-user-name,
+    #whitelistModal .modal-user-name {
+        color: #666;
+        margin-left: 8px;
+    }
+
+    #userModal .modal-user-name {
+        color: #ccc;
+    }
+
+    [data-darkmode="true"] #userModal .modal-user-name,
+    [data-darkmode="true"] #whitelistModal .modal-user-name {
+        color: #c0c0c0;
+    }
+
+    #userModal .modal-content h3,
+    #whitelistModal .modal-content h3 {
+        color: inherit;
     }
     
     .whitelist-section {
@@ -229,8 +265,7 @@
 
         allUsers.forEach(user => {
             const userElement = document.createElement('div');
-            userElement.style.padding = '8px';
-            userElement.style.borderBottom = '1px solid #eee';
+            userElement.className = 'modal-user-item';
             
             const displayName = user.nickname || user.hostname || '';
             
@@ -238,7 +273,7 @@
                 <label style="display: flex; align-items: center;">
                     <input type="checkbox" value="${user.mac}" style="margin-right: 8px;">
                     <span>${user.mac}</span>
-                    <span style="color: #666; margin-left: 8px;">${displayName ? `(${displayName})` : ''}</span>
+                    <span class="modal-user-name">${displayName ? `(${displayName})` : ''}</span>
                 </label>
             `;
             userList.appendChild(userElement);
@@ -346,8 +381,7 @@
 
         allUsers.forEach(user => {
             const userElement = document.createElement('div');
-            userElement.style.padding = '8px';
-            userElement.style.borderBottom = '1px solid #eee';
+            userElement.className = 'modal-user-item';
             
             const displayName = user.nickname || user.hostname || '';
             
@@ -355,7 +389,7 @@
                 <label style="display: flex; align-items: center;">
                     <input type="checkbox" value="${user.mac}" style="margin-right: 8px;">
                     <span>${user.mac}</span>
-                    <span style="color: #666; margin-left: 8px;">${displayName ? `(${displayName})` : ''}</span>
+                    <span class="modal-user-name">${displayName ? `(${displayName})` : ''}</span>
                 </label>
             `;
             userList.appendChild(userElement);
@@ -453,7 +487,7 @@
 </div>
 
     <div id="userModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); z-index: 1000; justify-content: center; align-items: center;">
-        <div class="modal-content" style="background-color: #2d2d2d; color: #ffffff;">
+        <div class="modal-content">
             <h3 style="margin: 0 0 15px 0;"><%:Select device%></h3>
             <div id="userList" style="flex: 1; overflow-y: auto;">
             </div>

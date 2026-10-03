@@ -19,6 +19,13 @@
     }
 
     [data-darkmode="true"] {
+        --chart-text-color: var(--text-color-high, #e5e7eb);
+        --chart-axis-line-color: var(--border-color-medium, #64748b);
+        --chart-axis-label-color: var(--text-color-medium, #cbd5e1);
+        --chart-split-line-color: var(--border-color-low, #334155);
+        --chart-split-line-dashed-color: var(--border-color-medium, #64748b);
+        --chart-tooltip-bg: var(--background-color-high, #1f2937);
+        --chart-tooltip-text: var(--text-color-high, #f8fafc);
         --temp-space-bar-gradient: linear-gradient(90deg,#a1ecff,#abd5ff);
         --storage-bar-gradient: linear-gradient(90deg,#9deaff,#a6ceff);
         --storage-bar-shadow: 0 0 14px rgba(151, 217, 255, 0.58);
@@ -238,14 +245,14 @@
         color: #111827;
     }
     [data-darkmode="true"] .app-stats-switch-menu {
-        background: #1f2937;
-        color: #e5e7eb;
-        border-color: #374151;
+        background: var(--background-color-high, #1f2937);
+        color: var(--text-color-high, #e5e7eb);
+        border-color: var(--border-color-medium, #374151);
     }
     [data-darkmode="true"] .app-stats-switch-item:hover,
     [data-darkmode="true"] .app-stats-switch-item.active {
-        background: #374151;
-        color: #f3f4f6;
+        background: var(--background-color-medium, #374151);
+        color: var(--text-color-high, #f3f4f6);
     }
     .tab-btn:hover {
     }
@@ -253,6 +260,9 @@
         background: rgba(59, 130, 246, 0.3);
         border-color: rgba(59, 130, 246, 0.5);
         color: #3b82f6;
+    }
+    [data-darkmode="true"] .tab-btn.active {
+        color: #93c5fd;
     }
     .top-stats { display:grid; grid-template-columns: repeat(4,1fr); gap:10px; margin-bottom:12px; }
     .acceleration-warning {
@@ -858,14 +868,14 @@
         min-width: 0;
     }
     .active-terminal-up {
-        color: #58a6ff;
+        color: #2563eb;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         min-width: 0;
     }
     .active-terminal-down {
-        color: #8b7bff;
+        color: #6d28d9;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -874,9 +884,11 @@
     .active-terminal-empty {
         padding: 12px 0;
         text-align: center;
-        color: #888;
+        color: var(--text-color-medium, #888);
         font-size: 12px;
     }
+    [data-darkmode="true"] .active-terminal-up { color: #93c5fd; }
+    [data-darkmode="true"] .active-terminal-down { color: #b4a8ff; }
     .active-terminal-item > .tooltip {
         position: absolute;
         z-index: 1000;
@@ -1077,11 +1089,12 @@
     .active-url-item.www-highlight .active-url-url {
         color: #22c55e;
     }
+    [data-darkmode="true"] .active-url-item.www-highlight .active-url-url { color: #86efac; }
     .tooltip {
-        --tooltip-bg: rgba(20, 29, 41, 0.96);
-        --tooltip-border: rgba(118, 136, 160, 0.34);
-        --tooltip-label-color: rgba(194, 210, 228, 0.78);
-        --tooltip-value-color: rgba(229, 238, 250, 0.94);
+        --tooltip-bg: var(--background-color-high, #141d29);
+        --tooltip-border: var(--border-color-medium, #7688a0);
+        --tooltip-label-color: var(--text-color-medium, #c2d2e4);
+        --tooltip-value-color: var(--text-color-high, #e5eefa);
         position: absolute;
         background: var(--tooltip-bg);
         border: 1px solid var(--tooltip-border);
@@ -1095,6 +1108,7 @@
         box-shadow: 0 10px 24px rgba(6, 12, 22, 0.40);
         display: none;
     }
+    [data-darkmode="true"] .tooltip { color: var(--text-color-high, #e5eefa); }
     :root:not([data-darkmode="true"]) .tooltip {
         --tooltip-bg: #ffffff;
         --tooltip-border: rgba(151, 166, 183, 0.42);
@@ -1199,6 +1213,19 @@
         flex: 1;
     }
 
+    #active-apps .app-item > .tooltip {
+        box-sizing: border-box;
+        width: max-content;
+        min-width: 0;
+        max-width: min(420px, calc(100vw - 32px));
+    }
+    #active-apps .app-item > .tooltip .tooltip-value {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    #active-apps .app-item > .tooltip::before {
+        left: var(--app-tooltip-arrow-x, 50%);
+    }
     .app-item:hover .tooltip {
         display: block;
     }
@@ -1209,6 +1236,10 @@
     }
 
     @media (max-width: 768px) {
+        .app-grid {
+            grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
+        }
+
         .dash {
             grid-template-columns: 1fr;  
             gap: 12px;
@@ -2423,8 +2454,8 @@
         '#fda4af',
         '#14b8a6'
     ];
-    var userTrafficUpColor = '#58a6ff';
-    var userTrafficDownColor = '#8b7bff';
+    var userTrafficUpColor = isDarkMode() ? '#93c5fd' : '#2563eb';
+    var userTrafficDownColor = isDarkMode() ? '#b4a8ff' : '#6d28d9';
 
     var currentAppStatsType = 'daily';
     var currentTrafficStatsType = 'today';
@@ -3003,7 +3034,7 @@
     if (lineWan) {
         lineWan.setOption({
             backgroundColor: 'transparent',
-            color: ['#58a6ff', '#8b7bff'],
+            color: [userTrafficUpColor, userTrafficDownColor],
             textStyle:{ color: axisLabelColor },
             animation: false,
             animationDurationUpdate: 0,
@@ -3297,6 +3328,33 @@
         return d.getFullYear()+'-'+(d.getMonth()+1).toString().padStart(2,'0')+'-'+d.getDate().toString().padStart(2,'0')+' '+
                d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');
     }
+    function positionActiveAppTooltip(item) {
+        const tooltip = item.querySelector(':scope > .tooltip');
+        const grid = document.getElementById('active-apps');
+        if (!tooltip || !grid) return;
+
+        const gridRect = grid.getBoundingClientRect();
+        const itemRect = item.getBoundingClientRect();
+        const leftBound = Math.max(gridRect.left, 8);
+        const rightBound = Math.min(gridRect.right, window.innerWidth - 8);
+        if (rightBound <= leftBound) return;
+
+        tooltip.style.maxWidth = `${Math.min(420, rightBound - leftBound)}px`;
+        const width = tooltip.getBoundingClientRect().width;
+        const center = itemRect.left + itemRect.width / 2;
+        const left = Math.max(leftBound, Math.min(center - width / 2, rightBound - width));
+        tooltip.style.left = `${left - itemRect.left}px`;
+        tooltip.style.transform = 'none';
+        tooltip.style.setProperty('--app-tooltip-arrow-x', `${Math.max(12, Math.min(center - left, width - 12))}px`);
+    }
+
+    $(document).on('mouseenter', '#active-apps .app-item', function() {
+        positionActiveAppTooltip(this);
+    });
+    $(window).on('resize', () => {
+        $('#active-apps .app-item:hover').each((_, item) => positionActiveAppTooltip(item));
+    });
+
     function updateActiveApps(appList){
         var $container = $('#active-apps');
 
@@ -3357,6 +3415,19 @@
                 .addClass('app-name')
                 .text(formatActiveAppName(appFullName))
                 .attr('title', appFullName);
+            if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+                window.OAFIcon.bindFeatureHover($iconWrap.add($nameSpan), {
+                    appid: appId,
+                    name: appFullName,
+                    apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                    texts: {
+                        loading: '<%:Loading...%>',
+                        error: '<%:Load failed%>',
+                        empty: '<%:No Data%>',
+                        titleSuffix: '<%:Feature Rules%>'
+                    }
+                });
+            }
             var $tooltip = $('<div>').addClass('tooltip tooltip-top tooltip-arrow-center tooltip-center-x');
 
             var timestamp = app.timestamp ? formatTime(app.timestamp * 1000) : formatTime(Date.now());
@@ -3364,16 +3435,17 @@
             var tooltipHtml = 
                 '<div class="tooltip-row"><span class="tooltip-label">' + _AccessTime + ':</span><span class="tooltip-value">'+timestamp+'</span></div>';
             tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _User + ':</span><span class="tooltip-value" title="' + escapeHtml(userInfo.full) + '">' + escapeHtml(userInfo.display) + '</span></div>';
-            if(app.src_ip) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _SourceIP + ':</span><span class="tooltip-value">'+app.src_ip+'</span></div>';
-            if(app.dst_ip) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _DestinationIP + ':</span><span class="tooltip-value">'+app.dst_ip+'</span></div>';
-            if(app.protocol) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _Protocol + ':</span><span class="tooltip-value">'+app.protocol+'</span></div>';
-            if(app.src_port) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _SourcePort + ':</span><span class="tooltip-value">'+app.src_port+'</span></div>';
-            if(app.dst_port) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _DestinationPort + ':</span><span class="tooltip-value">'+app.dst_port+'</span></div>';
-            if(app.domain) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _MatchedDomain + ':</span><span class="tooltip-value">'+app.domain+'</span></div>';
+            if(app.src_ip) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _SourceIP + ':</span><span class="tooltip-value">'+escapeHtml(app.src_ip)+'</span></div>';
+            if(app.dst_ip) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _DestinationIP + ':</span><span class="tooltip-value">'+escapeHtml(app.dst_ip)+'</span></div>';
+            if(app.protocol) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _Protocol + ':</span><span class="tooltip-value">'+escapeHtml(app.protocol)+'</span></div>';
+            if(app.src_port) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _SourcePort + ':</span><span class="tooltip-value">'+escapeHtml(app.src_port)+'</span></div>';
+            if(app.dst_port) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _DestinationPort + ':</span><span class="tooltip-value">'+escapeHtml(app.dst_port)+'</span></div>';
+            if(app.domain) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _MatchedDomain + ':</span><span class="tooltip-value">'+escapeHtml(app.domain)+'</span></div>';
             $tooltip.html(tooltipHtml);
             $appItem.append($iconWrap).append($nameSpan).append($tooltip);
             $container.append($appItem);
         });
+        $container.find('.app-item:hover').each((_, item) => positionActiveAppTooltip(item));
     }
 
     function extractDomain(url) {
@@ -3518,12 +3590,10 @@
     var hostRenderInterval = null; 
     var isFirstRender = true; 
 
-    var userColors = [
-        '#38bdf8',
-        '#f97316',
-        '#c084fc',
-        '#ec4899',
-        '#84cc16'
+    var userColors = isDarkMode() ? [
+        '#38bdf8', '#fb923c', '#c084fc', '#f472b6', '#a3e635'
+    ] : [
+        '#0369a1', '#9a3412', '#7e22ce', '#be185d', '#3f6212'
     ];
 
     function getUserColor(mac) {
@@ -4174,5 +4244,51 @@
         resizeDashboardCharts();
     }
 
+
+    // ECharts SVGs retain their computed colors when Argon switches theme in place.
+    new MutationObserver(function() {
+        axisLineColor = getCSSVariable('--chart-axis-line-color', 'rgba(0,0,0,0.2)');
+        axisLabelColor = getCSSVariable('--chart-axis-label-color', '#666666');
+        splitLineColor = getCSSVariable('--chart-split-line-color', 'rgba(0,0,0,0.08)');
+        splitLineDashedColor = getCSSVariable('--chart-split-line-dashed-color', 'rgba(0,0,0,0.15)');
+        tooltipBg = getCSSVariable('--chart-tooltip-bg', 'rgba(255,255,255,0.95)');
+        tooltipText = getCSSVariable('--chart-tooltip-text', '#333333');
+        userTrafficUpColor = isDarkMode() ? '#93c5fd' : '#2563eb';
+        userTrafficDownColor = isDarkMode() ? '#b4a8ff' : '#6d28d9';
+        userColors = isDarkMode()
+            ? ['#38bdf8', '#fb923c', '#c084fc', '#f472b6', '#a3e635']
+            : ['#0369a1', '#9a3412', '#7e22ce', '#be185d', '#3f6212'];
+        axis.axisLine.lineStyle.color = axisLineColor;
+        axis.splitLine.lineStyle.color = splitLineColor;
+
+        var textStyle = { color: axisLabelColor };
+        var tooltipStyle = { backgroundColor: tooltipBg, textStyle: { color: tooltipText } };
+        var trafficColors = [userTrafficUpColor, userTrafficDownColor];
+        pieApp.setOption({ textStyle: textStyle, tooltip: tooltipStyle, legend: { textStyle: textStyle } });
+        barUserTraffic.setOption({
+            color: trafficColors, textStyle: textStyle, tooltip: tooltipStyle,
+            legend: { textStyle: textStyle },
+            xAxis: { axisLabel: textStyle, axisLine: axis.axisLine },
+            yAxis: [{ axisLabel: textStyle, axisLine: axis.axisLine }, {}],
+            series: [{}, { label: textStyle }]
+        });
+        if (lineWan) lineWan.setOption({
+            color: trafficColors, textStyle: textStyle, tooltip: tooltipStyle,
+            legend: { textStyle: textStyle },
+            xAxis: { axisLabel: textStyle, axisLine: axis.axisLine, splitLine: axis.splitLine },
+            yAxis: { axisLabel: textStyle, axisLine: axis.axisLine, splitLine: { lineStyle: { color: splitLineDashedColor } } }
+        });
+        historyTraffic.setOption({
+            color: trafficColors, textStyle: textStyle,
+            tooltip: { backgroundColor: tooltipBg, textStyle: { color: tooltipText }, axisPointer: { lineStyle: { color: splitLineDashedColor } } },
+            legend: { textStyle: textStyle },
+            xAxis: { axisLabel: textStyle, axisLine: axis.axisLine },
+            yAxis: { axisLabel: textStyle, axisLine: axis.axisLine, splitLine: { lineStyle: { color: splitLineDashedColor } } }
+        });
+        $('#active-url-list .active-url-item').each(function() {
+            var key = $(this).data('host-key') || '';
+            $(this).find('.active-url-name').css('color', getUserColor(key.split('|')[0]));
+        });
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-darkmode'] });
 
 //]]></script>
