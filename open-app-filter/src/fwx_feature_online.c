@@ -443,7 +443,6 @@ static struct json_object *status_data(void)
             online_status.download_now = 0;
             online_status.started_at = 0;
             online_status.updated_at = now;
-            online_worker_running = 0;
             write_status_file_locked();
             timed_out = 1;
         }
@@ -459,8 +458,14 @@ static struct json_object *status_data(void)
     json_object_object_add(data, "elapsed", json_object_new_int(elapsed));
     pthread_mutex_unlock(&online_mutex);
     if (timed_out) {
-        LOG_WARN("feature online update timeout, elapsed=%d", elapsed);
-        release_upgrade_lock();
+        /*
+         * 这里不清理 online_worker_running、不释放升级锁：worker 是 detached 线程，
+         * 超时后可能仍在下载/解包（受自身 curl 与命令超时约束）。此前在此清零并
+         * release_upgrade_lock()（rm -rf 工作目录）会让新请求并发启动第二个 worker，
+         * 两个 worker 共享同一 archive/candidate/workdir/pipe。锁与运行标志改由
+         * worker 真正退出时的 worker_failed()/pipe 完成路径统一释放。
+         */
+        LOG_WARN("feature online update timeout, elapsed=%d, worker still running", elapsed);
     }
     return data;
 }

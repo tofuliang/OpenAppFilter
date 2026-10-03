@@ -126,6 +126,11 @@ struct json_object *fwx_api_get_history_session(struct json_object *req_obj)
     struct json_object *range_obj = req_obj ? json_object_object_get(req_obj, "range") : NULL;
     struct json_object *minutes_obj = req_obj ? json_object_object_get(req_obj, "minutes") : NULL;
     session_ring_t *ring = NULL;
+    if (!data_obj || !list_obj) {
+        if (data_obj) json_object_put(data_obj);
+        if (list_obj) json_object_put(list_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
 
     session_stat_init();
 

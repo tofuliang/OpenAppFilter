@@ -71,6 +71,11 @@ int fwx_get_notice_status(void)
 struct json_object *fwx_api_get_system_info(struct json_object *req_obj) {
     struct json_object *data_obj = json_object_new_object();
     struct json_object *fwx_obj = json_object_new_object();
+    if (!data_obj || !fwx_obj) {
+        if (data_obj) json_object_put(data_obj);
+        if (fwx_obj) json_object_put(fwx_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
     struct uci_context *uci_ctx = uci_alloc_context();
     if (!uci_ctx) {
         LOG_ERROR("Failed to allocate UCI context\n");
@@ -181,6 +186,8 @@ int fwx_get_tcp_rst(void)
 struct json_object *fwx_api_get_tcp_rst(struct json_object *req_obj)
 {
     struct json_object *data_obj = json_object_new_object();
+    if (!data_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
 
     (void)req_obj;
     json_object_object_add(data_obj, "tcp_rst", json_object_new_int(fwx_get_tcp_rst()));
@@ -223,6 +230,8 @@ struct json_object *fwx_api_set_tcp_rst(struct json_object *req_obj)
 struct json_object *fwx_api_get_advanced_settings(struct json_object *req_obj)
 {
     struct json_object *data_obj = json_object_new_object();
+    if (!data_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
 
     json_object_object_add(data_obj, "disable_hnat", json_object_new_int(fwx_get_disable_hnat()));
 

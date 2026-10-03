@@ -20,6 +20,8 @@ char *str_trim(char *s) {
     char *start, *last, *bk;
     int len;
 
+    if (!s || !s[0])
+        return s;
     start = s;
     while (isspace(*start))
         start++;
@@ -44,7 +46,11 @@ int exec_with_result_line(char *cmd, char *result, int len)
     fp = popen(cmd, "r");
     if (!fp) 
         return -1;
-    fgets(result, len, fp);   
+    if (!fgets(result, len, fp)) {
+        result[0] = '\0';
+        pclose(fp);
+        return -1;
+    }
     str_trim(result);
     pclose(fp);
 	return 0;
@@ -154,6 +160,10 @@ int fwx_parse_time_str(const char *time_str, fwx_time_period_t *periods, int max
             time_period = strtok_r(NULL, " ", &save_ptr1);
             continue;
         }
+        if ((size_t)(first_delim - time_period) >= sizeof(start)) {
+            time_period = strtok_r(NULL, " ", &save_ptr1);
+            continue;
+        }
         
         
         strncpy(start, time_period, first_delim - time_period);
@@ -162,13 +172,20 @@ int fwx_parse_time_str(const char *time_str, fwx_time_period_t *periods, int max
         
         char *second_delim = strchr(first_delim + 1, '-');
         if (second_delim) {
+            if ((size_t)(second_delim - first_delim - 1) >= sizeof(end)) {
+                time_period = strtok_r(NULL, " ", &save_ptr1);
+                continue;
+            }
             
             strncpy(end, first_delim + 1, second_delim - first_delim - 1);
             end[second_delim - first_delim - 1] = '\0';
             strncpy(weekdays, second_delim + 1, sizeof(weekdays) - 1);
         } else {
-            
-            strncpy(end, first_delim + 1, sizeof(end) - 1);
+            if (strlen(first_delim + 1) >= sizeof(end)) {
+                time_period = strtok_r(NULL, " ", &save_ptr1);
+                continue;
+            }
+            strcpy(end, first_delim + 1);
         }
         
         

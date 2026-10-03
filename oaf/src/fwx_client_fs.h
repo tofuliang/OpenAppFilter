@@ -8,6 +8,7 @@
 
 int init_af_client_procfs(void);
 void finit_af_client_procfs(void);
+void remove_af_client_base_dir(void);
 int create_client_proc_dir(af_client_info_t *client);
 void remove_client_proc_dir(af_client_info_t *client);
 

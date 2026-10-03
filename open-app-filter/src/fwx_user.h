@@ -86,13 +86,6 @@ typedef struct visit_stat
 } visit_stat_t;
 
 
-typedef struct global_app_type_record
-{
-    int app_type;  
-    unsigned long long time_delta;  
-    u_int32_t timestamp;  
-    struct list_head list;  
-} global_app_type_record_t;
 
 
 typedef struct traffic_stat

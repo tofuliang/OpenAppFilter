@@ -51,6 +51,11 @@ fwx_capability_t g_fwx_capability = {
 };
 
 void fwx_timeout_handler(struct uloop_timeout *t);
+static void fwx_process_feature_candidate(void);
+
+/* 信号处理器只置位，重活放回 uloop 定时器执行，避免在 malloc/stdio 中途重入死锁 */
+static volatile sig_atomic_t g_candidate_signal = 0;
+static volatile sig_atomic_t g_log_level_signal = 0;
 
 
 struct uloop_timeout fwx_tm = {
@@ -167,6 +172,11 @@ int fwx_nl_clean_feature(void){
 int fwx_nl_add_feature(char *feature){
     char msg_buf[1024] = {0};
     if (fwx_nl_fd.fd < 0){
+        return -1;
+    }
+    if (!feature || strlen(feature) + sizeof(fwx_nl_msg_t) + 1 > sizeof(msg_buf)) {
+        LOG_ERROR("feature line too long for netlink msg: %zu\n",
+                  feature ? strlen(feature) : 0);
         return -1;
     }
     char *p_data = msg_buf + sizeof(fwx_nl_msg_t);
@@ -354,6 +364,18 @@ void fwx_timeout_handler(struct uloop_timeout *t)
     static u_int32_t last_check_date = 0;
     u_int32_t current_time = time(NULL);
     count++;
+    if (g_candidate_signal) {
+        g_candidate_signal = 0;
+        fwx_process_feature_candidate();
+    }
+    if (g_log_level_signal) {
+        g_log_level_signal = 0;
+        if (current_log_level < LOG_LEVEL_DEBUG)
+            current_log_level++;
+        else
+            current_log_level = LOG_LEVEL_WARN;
+        LOG_WARN("change log level to %d\n", current_log_level);
+    }
     if (count % 10 == 0){
         update_client_list();
         move_expired_online_visit_to_offline();
@@ -364,6 +386,10 @@ void fwx_timeout_handler(struct uloop_timeout *t)
         if (check_client_expire()){
             flush_expire_client_node();
         }
+        /* 定期回收 offline visit 记录：此前 check/flush 函数无任何调用者，
+         * netlink 报告持续产生的 visit 节点只增不减（内存无界增长） */
+        check_client_visit_info_expire();
+        flush_expire_visit_info();
         dump_client_list();
         cleanup_expired_hourly_stats();
         check_and_cleanup_history_data_by_size();
@@ -424,13 +450,16 @@ void init_system_config_to_proc(void) {
     }
 }
 
-void fwx_handle_sigusr1(int sig) {
+/*
+ * 候选 feature 处理涉及 fopen/malloc/json/rename 等非异步信号安全操作，
+ * 只能在 uloop 定时器上下文执行；信号处理器仅置位 g_candidate_signal。
+ */
+static void fwx_process_feature_candidate(void) {
     char version[64] = {0};
     char format[32] = {0};
     int status_code = FEATURE_UPGRADE_FAILED;
     int process_ret;
 
-    (void)sig;
     LOG_WARN("Received feature upgrade signal, candidate=%s\n",
              FWX_FEATURE_CANDIDATE_PATH);
     if (access(FWX_FEATURE_CANDIDATE_PATH, F_OK) != 0) {
@@ -464,14 +493,14 @@ void fwx_handle_sigusr1(int sig) {
              FEATURE_UPGRADE_SUCCESS);
 }
 
-void fwx_handle_sigusr2(int sig) {
-    LOG_INFO("Received SIGUSR2 signal\n");
-	if (current_log_level < LOG_LEVEL_DEBUG)
-   		current_log_level++;
-	else
-		current_log_level = LOG_LEVEL_WARN;
+void fwx_handle_sigusr1(int sig) {
+    (void)sig;
+    g_candidate_signal = 1;
+}
 
-	LOG_WARN("change log level to %d\n", current_log_level);
+void fwx_handle_sigusr2(int sig) {
+    (void)sig;
+    g_log_level_signal = 1;
 }
 
 void init_fwx_capability(void) {

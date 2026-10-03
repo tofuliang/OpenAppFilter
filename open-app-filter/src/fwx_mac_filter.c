@@ -643,10 +643,17 @@ struct json_object *fwx_api_get_mac_filter_rules(struct json_object *req_obj) {
     int i;
     struct json_object *data_obj = json_object_new_object();
     struct json_object *rules_array = json_object_new_array();
+    if (!data_obj || !rules_array) {
+        if (data_obj) json_object_put(data_obj);
+        if (rules_array) json_object_put(rules_array);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
     
     struct uci_context *uci_ctx = uci_alloc_context();
     if (!uci_ctx) {
         LOG_ERROR("Failed to allocate UCI context\n");
+        json_object_put(data_obj);
+        json_object_put(rules_array);
         return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
 
@@ -1187,14 +1194,22 @@ struct json_object *fwx_api_delete_mac_filter_rule(struct json_object *req_obj) 
 struct json_object *fwx_api_get_mac_filter_whitelist(struct json_object *req_obj) {
 	int i;
     struct json_object *data_obj = json_object_new_object();
+    if (!data_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     
     struct uci_context *uci_ctx = uci_alloc_context();
     if (!uci_ctx) {
         LOG_ERROR("Failed to allocate UCI context\n");
+        json_object_put(data_obj);
         return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
 
     struct json_object *mac_array = json_object_new_array();
+    if (!mac_array) {
+        uci_free_context(uci_ctx);
+        json_object_put(data_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
     char mac_str[128] = {0};
     int num = fwx_uci_get_list_num(uci_ctx, "macfilter_whitelist", "whitelist_mac");
     for (i = 0; i < num; i++) {

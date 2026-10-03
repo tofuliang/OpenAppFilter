@@ -41,7 +41,6 @@ static void* check_thread_func(void *arg) {
     
     check_thread_running = 1;
     LOG_DEBUG("check_thread: running\n");
-    
     check_and_cleanup_log_dir();
     
     while (!check_thread_exit) {
@@ -69,6 +68,7 @@ int start_check_thread(void) {
         return -1;
     }
     LOG_INFO("check_thread: created\n");
+    check_thread_running = 1;
     return 0;
 }
 
@@ -78,5 +78,5 @@ void stop_check_thread(void) {
     }
     check_thread_exit = 1;
     pthread_join(check_thread, NULL);
-
+    check_thread_running = 0;
 }

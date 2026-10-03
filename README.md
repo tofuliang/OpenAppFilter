@@ -92,3 +92,9 @@ Do not directly overwrite a live router over SSH with an unverified build or scr
 
 These instructions describe local build and deployment precautions only. They do not mean that any router has been deployed or modified remotely.
 
+### Kernel memory safety
+
+Regular-expression character classes such as `[*]` require a rebuilt `kmod-oaf` containing the `regexp.c` allocation/free fix. Updating `feature.bin`, LuCI, or `oafd` alone does not update an already loaded kernel module. The `appfilter.global.enable=0` setting disables filtering decisions but does not unregister the module's packet hooks; stop the service and unload the module before replacing it. Unreachable kernel allocations from an older module are not recovered by unloading it and may require a controlled reboot.
+
+Verify a new build on a staging image before restoring traffic. Monitor `/proc/meminfo` (`MemAvailable`, `SUnreclaim`), `/proc/vmstat` (`oom_kill`), and service/process memory over a sustained traffic window. Device retention for a large number of distinct MAC addresses within the configured history window remains a separate capacity concern, not a permanent allocation leak.
+

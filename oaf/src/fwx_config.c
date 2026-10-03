@@ -76,7 +76,7 @@ int fwx_config_handle(char *config, unsigned int len)
 	}
 	api_obj = cJSON_GetObjectItem(config_obj, "api");
 	data_obj = cJSON_GetObjectItem(config_obj, "data");
-	if (!api_obj){
+	if (!api_obj || api_obj->type != cJSON_String || !api_obj->valuestring){
 		printk("error, api obj not set\n");
 		cJSON_Delete(config_obj);
 		return -1;
@@ -107,11 +107,13 @@ int fwx_config_handle(char *config, unsigned int len)
 static int fwx_cdev_open(struct inode *inode, struct file *filp)
 {
 	struct fwx_cdev_file *file;
-	file = vzalloc(sizeof(*file));
-	if (!file)
-		return -EINVAL;
 
 	mutex_lock(&fwx_cdev_mutex);
+	file = vzalloc(sizeof(*file));
+	if (!file) {
+		mutex_unlock(&fwx_cdev_mutex);
+		return -ENOMEM;
+	}
 	filp->private_data = file;
 	return 0;
 }
@@ -135,14 +137,17 @@ static ssize_t fwx_cdev_write(struct file *filp, const char *buffer, size_t coun
 {
 	struct fwx_cdev_file *file = filp->private_data;
 	int ret;
-	if (file->size + count > sizeof(file->buf))
+	if (file->size + count >= sizeof(file->buf))
 		return -EINVAL;
 
 	ret = copy_from_user(file->buf + file->size, buffer, count);
-	if (ret != 0)
+	if (ret != 0) {
+		file->buf[file->size] = '\0';
 		return -EINVAL;
+	}
 
 	file->size += count;
+	file->buf[file->size] = '\0';
 	return count;
 }
 

@@ -201,6 +201,12 @@ struct json_object *fwx_api_get_record_whitelist(struct json_object *req_obj)
     struct json_object *all_list_obj = json_object_new_array();
     struct json_object *page_list_obj = json_object_new_array();
     struct uci_context *uci_ctx = NULL;
+    if (!data_obj || !all_list_obj || !page_list_obj) {
+        if (data_obj) json_object_put(data_obj);
+        if (all_list_obj) json_object_put(all_list_obj);
+        if (page_list_obj) json_object_put(page_list_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
 
     if (req_obj) {
         page_obj = json_object_object_get(req_obj, "page");
@@ -251,7 +257,7 @@ struct json_object *fwx_api_get_record_whitelist(struct json_object *req_obj)
     }
 
     for (i = start_idx; i < end_idx; i++) {
-        struct json_object *item_obj = json_object_new_object();
+        struct json_object *item_obj = NULL;
         const char *mac = NULL;
         client_node_t *dev = NULL;
 
@@ -259,6 +265,9 @@ struct json_object *fwx_api_get_record_whitelist(struct json_object *req_obj)
         if (!mac) {
             continue;
         }
+        item_obj = json_object_new_object();
+        if (!item_obj)
+            continue;
         dev = find_client_node((char *)mac);
 
         json_object_object_add(item_obj, "mac", json_object_new_string(mac));
@@ -291,6 +300,8 @@ struct json_object *fwx_api_add_record_whitelist(struct json_object *req_obj)
     struct json_object *mac_list_obj = NULL;
     struct json_object *exist_list_obj = json_object_new_array();
     struct uci_context *uci_ctx = NULL;
+    if (!exist_list_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
 
     if (!req_obj) {
         json_object_put(exist_list_obj);
@@ -354,6 +365,8 @@ struct json_object *fwx_api_del_record_whitelist(struct json_object *req_obj)
     struct json_object *mac_obj = NULL;
     struct json_object *exist_list_obj = json_object_new_array();
     struct uci_context *uci_ctx = NULL;
+    if (!exist_list_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
 
     if (!req_obj) {
         json_object_put(exist_list_obj);
@@ -408,6 +421,8 @@ struct json_object *fwx_api_set_record_whitelist(struct json_object *req_obj)
     struct json_object *mac_list_obj = NULL;
     struct json_object *new_list_obj = json_object_new_array();
     struct uci_context *uci_ctx = NULL;
+    if (!new_list_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
 
     if (!req_obj) {
         json_object_put(new_list_obj);

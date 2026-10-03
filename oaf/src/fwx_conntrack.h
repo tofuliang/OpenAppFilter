@@ -34,6 +34,8 @@ typedef struct {
     unsigned long last_jiffies;
 } af_conn_t;
 
+/* add/find/find_and_add require af_conn_lock; cleanup and proc snapshot
+ * construction acquire it internally. Snapshot seq iteration needs no lock. */
 int af_conn_init(void);
 
 void af_conn_cleanup(void);

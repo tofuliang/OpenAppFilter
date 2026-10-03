@@ -54,6 +54,7 @@ static void regexp_free(RE *regexp)
 	for(; regexp; regexp = tmp)
 	{
 		tmp = regexp->next;
+		kfree(regexp->ccl);
 		kfree(regexp);
 	}
 }
@@ -63,27 +64,42 @@ static RE* compile(char *regexp)
 	RE head, *tail, *tmp;
 	char *pstr;
 	int err_flag = 0;
+	head.next = NULL;
 
-	for(tail = &head; *regexp != '\0' && err_flag == 0; regexp++)
+	for(tail = &head; err_flag == 0 && *regexp != '\0'; regexp++)
 	{
-		tmp = getmem(sizeof(RE));
+		tmp = getmem(sizeof(*tmp));
+		if (!tmp)
+			goto error;
+		tmp->ccl = NULL;
+		tmp->next = NULL;
+		tail->next = tmp;
+		tail = tmp;
 		switch(*regexp){
 			case '\\':
 				regexp++;
+				if (*regexp == '\0') {
+					err_flag = 1;
+					break;
+				}
 				if(*regexp == 'd')
 				{
 					tmp->type = LIST;
 					tmp->nccl = 0;
 					tmp->ccl = getmem(11);
+					if (!tmp->ccl)
+						goto error;
 					creat_list(tmp->ccl, '0','9');
-					tmp->ccl[11] = '\0';
+					tmp->ccl[10] = '\0';
 				}else if(*regexp == 'D')
 				{
 					tmp->type = LIST;
 					tmp->nccl = 1;
 					tmp->ccl = getmem(11);
+					if (!tmp->ccl)
+						goto error;
 					creat_list(tmp->ccl, '0','9');
-					tmp->ccl[11] = '\0';
+					tmp->ccl[10] = '\0';
 				}else
 				{
 					tmp->type = CHAR;
@@ -112,6 +128,8 @@ static RE* compile(char *regexp)
 				break;
 			case '[':
 				pstr = tmp->ccl = getmem(256);
+				if (!pstr)
+					goto error;
 				tmp->nccl = 0;
 				if(*++regexp == '^')
 				{
@@ -122,15 +140,27 @@ static RE* compile(char *regexp)
 				{
 					if(*regexp != '-')
 					{
+						if (pstr >= tmp->ccl + 255) {
+							err_flag = 1;
+							break;
+						}
 						*pstr++ = *regexp++;
 						continue;
 					}
-					if(pstr == tmp->ccl || *(regexp + 1) == ']')
+					if(pstr == tmp->ccl || *(regexp + 1) == ']' || *(regexp + 1) == '\0')
 					{
 						err_flag = 1;
 						break;
 					}
-					pstr += creat_list(pstr, *(regexp - 1) + 1, *(regexp + 1));
+					{
+						int start = (unsigned char)*(regexp - 1) + 1;
+						int end = (unsigned char)*(regexp + 1);
+						if (end < start || (size_t)(end - start + 1) > 255 - (size_t)(pstr - tmp->ccl)) {
+							err_flag = 1;
+							break;
+						}
+						pstr += creat_list(pstr, start, end);
+					}
 					regexp += 2;
 				}
 				*pstr = '\0';
@@ -143,17 +173,15 @@ static RE* compile(char *regexp)
 				tmp->ch = *regexp;
 		}
 
-		tail->next = tmp;
-		tail = tmp;
 	}
 
-	tail->next = NULL;
 	if(err_flag)
-	{
-		regexp_free(head.next);
-		return NULL;
-	}
+		goto error;
 	return head.next;
+
+error:
+	regexp_free(head.next);
+	return NULL;
 }
 
 #define MATCH_ONE(reg, text) \

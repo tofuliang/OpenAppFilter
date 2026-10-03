@@ -4,6 +4,7 @@
 */
 #ifndef __AF_CLIENT_H__
 #define __AF_CLIENT_H__
+#include <linux/rcupdate.h>
 #include "fwx.h"
 struct cJSON;
 
@@ -19,7 +20,6 @@ extern int g_min_http_match_count;
 #define VISIT_INFO_TIMEOUT_SEC 300
 
 #define MAX_AF_CLIENT_HASH_SIZE 64
-#define NF_CLIENT_TIMER_EXPIRE 1
 #define MAX_CLIENT_ACTIVE_TIME 180
 
 #define AF_CLIENT_LOCK_R() read_lock_bh(&af_client_lock);
@@ -79,6 +79,7 @@ typedef struct visiting_info{
 typedef struct af_client_info
 {
 	struct list_head hlist;
+	struct list_head maint_list;
 	unsigned char mac[MAC_ADDR_LEN];
 	unsigned int ip;
 	struct in6_addr ipv6;
@@ -88,7 +89,6 @@ typedef struct af_client_info
 	flow_stat_t last_flow;
 	flow_stat_t period_flow; 
 	flow_rate_t rate;
-	struct timer_list client_timer;
 	unsigned int visit_app_num;
 	int active_time;
 	int inactive_time;
@@ -100,6 +100,7 @@ typedef struct af_client_info
 	spinlock_t visit_info_lock;
 	struct hlist_head visit_info_hash[MAX_VISIT_INFO_HASH_SIZE];
 	struct proc_dir_entry *proc_dir;
+	struct rcu_head rcu;
 } af_client_info_t;
 
 int af_client_init(void);
@@ -109,10 +110,6 @@ af_client_info_t *find_af_client_by_ip(unsigned int ip);
 af_client_info_t *find_af_client_by_ipv6(struct in6_addr *addr);
 
 af_client_info_t *find_af_client(unsigned char *mac);
-
-void check_client_expire(void);
-
-void af_visit_info_report(void);
 
 void af_client_list_reset_report_num(void);
 af_client_info_t *nf_client_add(unsigned char *mac);

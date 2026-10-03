@@ -125,7 +125,7 @@ int fwx_uci_add_list(struct uci_context *ctx, char *key, char *value)
         return -1;
     }
     char param_tmp[MAX_PARAM_LIST_LEN] = {0};    
-    sprintf(param_tmp, "%s=%s", key, value);
+    snprintf(param_tmp, sizeof(param_tmp), "%s=%s", key, value);
     if (uci_lookup_ptr(ctx, &ptr, param_tmp, true) != UCI_OK) {
         ret = 1;
         return ret;
@@ -166,14 +166,19 @@ int fwx_uci_get_list_value(struct uci_context *ctx, char *key, char *output, int
 			goto done;
         case UCI_TYPE_OPTION:
 			if (UCI_TYPE_LIST == ptr.o->type){
-				memset(output, 0x0, out_len);
+				if (out_len <= 0 || !output || !delimt) {
+					ret = -1;
+					goto done;
+				}
+				output[0] = '\0';
 				uci_foreach_element(&ptr.o->v.list, e) {
-					len = strlen(output);
-					if (sep){
-						strncat(output + len, delimt, out_len);
+					int written = snprintf(output + len, out_len - len, "%s%s", sep ? delimt : "", e->name);
+					if (written < 0 || written >= out_len - len) {
+						output[0] = '\0';
+						ret = -1;
+						goto done;
 					}
-					len = strlen(output);
-					sprintf(output + len, "%s", e->name);
+					len += written;
 					sep = 1;
 				}
 				ret = 0;
@@ -197,7 +202,8 @@ int fwx_uci_add_int_list(struct uci_context *ctx, char *key, int value)
     int dummy;
     char *parameters ;
     char param_tmp[128] = {0};    
-    sprintf(param_tmp, "%s=%d", key, value);
+    if (snprintf(param_tmp, sizeof(param_tmp), "%s=%d", key, value) >= (int)sizeof(param_tmp))
+        return 1;
     if (uci_lookup_ptr(ctx, &ptr, param_tmp, true) != UCI_OK) {
         ret = 1;
         return ret;
@@ -219,7 +225,8 @@ int fwx_uci_del_list(struct uci_context *ctx, char *key, char *value)
     int dummy;
     char *parameters ;
     char param_tmp[128] = {0};    
-    sprintf(param_tmp, "%s=%s", key, value);
+    if (snprintf(param_tmp, sizeof(param_tmp), "%s=%s", key, value) >= (int)sizeof(param_tmp))
+        return 1;
     if (uci_lookup_ptr(ctx, &ptr, param_tmp, true) != UCI_OK) {
         ret = 1;
         return ret;
@@ -242,7 +249,8 @@ int fwx_uci_set_value(struct uci_context *ctx, char *key, char *value)
     int dummy;
     char *parameters ;
     char param_tmp[2048] = {0};    
-    sprintf(param_tmp, "%s=%s", key, value);
+    if (snprintf(param_tmp, sizeof(param_tmp), "%s=%s", key, value) >= (int)sizeof(param_tmp))
+        return 1;
     if (uci_lookup_ptr(ctx, &ptr, param_tmp, true) != UCI_OK) {
         ret = 1;
         return ret;
@@ -266,7 +274,8 @@ int fwx_uci_set_int_value(struct uci_context *ctx, char *key, int value)
     int dummy;
     char *parameters ;
     char param_tmp[128] = {0};    
-    sprintf(param_tmp, "%s=%d", key, value);
+    if (snprintf(param_tmp, sizeof(param_tmp), "%s=%d", key, value) >= (int)sizeof(param_tmp))
+        return 1;
     if (uci_lookup_ptr(ctx, &ptr, param_tmp, true) != UCI_OK) {
         ret = 1;
         return ret;
@@ -283,34 +292,34 @@ int fwx_uci_set_int_value(struct uci_context *ctx, char *key, int value)
 
 int fwx_uci_del_array_value(struct uci_context *ctx, char *key_fmt, int index){
     char key[128] = {0};
-    sprintf(key, key_fmt, index);
+    if (snprintf(key, sizeof(key), key_fmt, index) >= (int)sizeof(key))
+        return 1;
     return fwx_uci_delete(ctx, key);
 }
 
 int fwx_uci_set_array_value(struct uci_context *ctx, char *key_fmt, int index, char *value){
     char key[128] = {0};
-    sprintf(key, key_fmt, index);
+    if (snprintf(key, sizeof(key), key_fmt, index) >= (int)sizeof(key))
+        return 1;
     return fwx_uci_set_value(ctx, key, value);
 }
 
 int fwx_uci_commit(struct uci_context *ctx, const char * package) {
     struct uci_ptr ptr;
-    int ret = UCI_OK;
     if (!package){
         return -1;
     }
     if (uci_lookup_ptr(ctx, &ptr, package, true) != UCI_OK) {
         return -1;
-    }   
+    }
 
     if (uci_commit(ctx, &ptr.p, false) != UCI_OK) {
-    	ret = -1;
-        goto done;
+        if (ptr.p)
+            uci_unload(ctx, ptr.p);
+        return -1;
     }
-done:
-	if (ptr.p)
-		uci_unload(ctx, ptr.p);
-
+    if (ptr.p)
+        uci_unload(ctx, ptr.p);
     return UCI_OK;
 }
 
@@ -354,8 +363,10 @@ int fwx_uci_add_section(struct uci_context * ctx, char *package_name, char *sect
         goto done;
     ret = uci_save(ctx, p); 
 done:
-    if (s) 
+    if (s)
         fprintf(stdout, "%s\n", s->e.name);
+    if (p)
+        uci_unload(ctx, p);
     return ret;
 }
 

@@ -27,7 +27,7 @@ function index()
 end
 
 function get_hostname_by_mac(dst_mac)
-    leasefile="/tmp/dhcp.leases"
+    local leasefile="/tmp/dhcp.leases"
     local fd = io.open(leasefile, "r")
 	if not fd then return end
     while true do
@@ -80,12 +80,7 @@ function call_fwx_common(api, data)
 end
 
 function user_status()
-	local json = require "luci.jsonc"
 	luci.http.prepare_content("application/json")
-	local fd = io.open("/proc/net/af_client","r")
-	status_buf=fd:read('*a')
-	fd:close()
-	user_array=json.parse(status_buf)
 	
 	local req_obj = {}
 	req_obj.api = "visit_list"
@@ -97,17 +92,25 @@ function user_status()
 		user_array = visit_obj.data.dev_list
 	end
 	local history={}
+	local app_names = {}
 	for i, v in pairs(user_array) do
-		visit_array=user_array[i].visit_info
+		local visit_array = user_array[i].visit_info
+		local hostname = get_hostname_by_mac(v.mac)
 		for j,s in pairs(visit_array) do
 			print(user_array[i].mac, user_array[i].ip,visit_array[j].appid, visit_array[j].latest_time)
-			total_time=visit_array[j].latest_time - visit_array[j].first_time;
+			local total_time=visit_array[j].latest_time - visit_array[j].first_time;
+			local appid = visit_array[j].appid
+			local appname = app_names[appid]
+			if appname == nil then
+				appname = get_app_name_by_id(appid)
+				app_names[appid] = appname
+			end
 			history[#history+1]={
 				mac=user_array[i].mac,
 				ip=user_array[i].ip,
-				hostname=get_hostname_by_mac(user_array[i].mac),
+				hostname=hostname,
 				appid=visit_array[j].appid,
-				appname=get_app_name_by_id(visit_array[j].appid),
+				appname=appname,
 				total_num=0,
 				drop_num=0,
 				latest_action=visit_array[j].latest_action,

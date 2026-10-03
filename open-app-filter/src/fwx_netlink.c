@@ -11,6 +11,7 @@
 #include <linux/socket.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <libubox/uloop.h>
 #include <libubox/utils.h>
 #include <libubus.h>
@@ -60,6 +61,15 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         return;
     }
 
+    if (ret < (int)(sizeof(struct nlmsghdr) + sizeof(struct fwx_nl_msg_hdr)) ||
+        ret >= (int)sizeof(buf))
+    {
+        printf("netlink msg size invalid %d\n", ret);
+        return;
+    }
+    /* 保证 JSON 解析在本次报文的边界内停止，不越读栈上残留数据 */
+    buf[ret] = '\0';
+
     h = (struct nlmsghdr *)buf;
     char *kmsg = (char *)NLMSG_DATA(h);
     struct fwx_nl_msg_hdr *af_hdr = (struct fwx_nl_msg_hdr *)kmsg;
@@ -101,7 +111,20 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         node = add_client_node(mac);
         if (!node)
         {
-            printf("add dev node failed\n");
+            /* 设备数达上限或分配失败时，内核对每个未收录 MAC 的每条上报都会走到
+             * 这里（随机 MAC 漫游可成热路径），按 60s 窗口节流并汇总抑制条数 */
+            static time_t last_log;
+            static unsigned int suppressed;
+            time_t now = time(NULL);
+
+            if (last_log == 0 || now - last_log >= 60) {
+                printf("add dev node failed (device cap or memory), suppressed=%u\n",
+                       suppressed);
+                last_log = now;
+                suppressed = 0;
+            } else {
+                suppressed++;
+            }
             json_object_put(root);
             return;
         }
@@ -296,7 +319,13 @@ int fwx_nl_send_msg_to_kernel(int fd, void *msg, int len)
     daddr.nl_groups = 0;
     int ret = 0;
     struct nlmsghdr *nlh = NULL;
-    nlh = (struct nlmsghdr *)malloc(NLMSG_SPACE(MAX_NL_MSG_LEN));
+
+    if (len <= 0 || len + (int)sizeof(struct fwx_nl_msg_hdr) > MAX_NL_MSG_LEN)
+        return -1;
+    /* calloc 置零：既避免 malloc 失败空指针解引用，也避免把未初始化堆数据发给内核 */
+    nlh = (struct nlmsghdr *)calloc(1, NLMSG_SPACE(MAX_NL_MSG_LEN));
+    if (!nlh)
+        return -1;
     nlh->nlmsg_len = NLMSG_SPACE(MAX_NL_MSG_LEN);
     nlh->nlmsg_flags = 0;
     nlh->nlmsg_type = 0;
@@ -314,7 +343,7 @@ int fwx_nl_send_msg_to_kernel(int fd, void *msg, int len)
 
     ret = sendto(fd, nlh, nlh->nlmsg_len, 0, (struct sockaddr *)&daddr, sizeof(struct sockaddr_nl));
 	free(nlh);
-    if (!ret)
+    if (ret < 0)
     {
         perror("sendto error\n");
         return -1;
@@ -341,6 +370,8 @@ int fwx_netlink_init(void)
     if (bind(fd, (void *)&nls, sizeof(struct sockaddr_nl)))
     {
         LOG_DEBUG("Bind failed %s\n", strerror(errno));
+        /* main.c 定时器每秒重连，失败不关 fd 会持续泄漏 socket 直至耗尽 fd 表 */
+        close(fd);
         return -1;
     }
 

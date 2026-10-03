@@ -694,7 +694,7 @@ static af_feature_node_t *af_match_dns_regex_feature(flow_info_t *flow, af_ac_ma
 			if (stat) {
 				stat->fallback_checks++;
 			}
-			if (regexp_match(node->host_url, domain_buf)) {
+			if (regexp_match(node->host_url, domain_buf) == 1) {
 				flow->match_by_dns = 1;
 				AF_LMT_INFO("match dns domain:%s	 reg = %s, appid=%d\n",
 						 domain_buf, node->host_url, node->app_id);
@@ -730,6 +730,19 @@ static af_feature_node_t *af_match_non_url_feature(flow_info_t *flow, af_ac_matc
 }
 
 
+static void af_copy_field(char *dst, size_t dst_size, const char *src, size_t len)
+{
+	if (!dst || dst_size == 0)
+		return;
+	if (!src)
+		len = 0;
+	if (len >= dst_size)
+		len = dst_size - 1;
+	if (len)
+		memcpy(dst, src, len);
+	dst[len] = '\0';
+}
+
 int __add_app_feature(char *feature, int appid, char *name, int proto, int src_port,
 					  port_info_t dport_info, char *host_url, char *request_url, char *dict, char *search_str, int ignore)
 {
@@ -752,11 +765,11 @@ int __add_app_feature(char *feature, int appid, char *name, int proto, int src_p
 		node->proto = proto;
 		node->dport_info = dport_info;
 		node->sport = src_port;
-		strcpy(node->host_url, host_url);
-		strcpy(node->request_url, request_url);
-		strcpy(node->search_str, search_str);
+		af_copy_field(node->host_url, sizeof(node->host_url), host_url, strlen(host_url));
+		af_copy_field(node->request_url, sizeof(node->request_url), request_url, strlen(request_url));
+		af_copy_field(node->search_str, sizeof(node->search_str), search_str, strlen(search_str));
 		node->ignore = ignore;
-		strcpy(node->feature, feature);
+		af_copy_field(node->feature, sizeof(node->feature), feature, strlen(feature));
 		if (ignore)
 			AF_DEBUG("add feature %s, ignore = %d\n", feature, ignore);
 
@@ -769,7 +782,7 @@ int __add_app_feature(char *feature, int appid, char *name, int proto, int src_p
 			if (*p == '|')
 			{
 				memset(pos, 0x0, sizeof(pos));
-				strncpy(pos, begin, p - begin);
+				af_copy_field(pos, sizeof(pos), begin, p - begin);
 				k_sscanf(pos, "%d:%x", &index, &value);
 				begin = p + 1;
 				node->pos_info[node->pos_num].pos = index;
@@ -781,9 +794,9 @@ int __add_app_feature(char *feature, int appid, char *name, int proto, int src_p
 		}
 
 		if (begin != dict)
-			strncpy(pos, begin, p - begin);
+			af_copy_field(pos, sizeof(pos), begin, p - begin);
 		else
-			strcpy(pos, dict);
+			af_copy_field(pos, sizeof(pos), dict, strlen(dict));
 
 		int ret = k_sscanf(pos, "%d:%x", &index, &value);
 		if (ret == 2){
@@ -967,30 +980,30 @@ int add_app_feature(int appid, char *name, char *feature)
 		{
 
 		case AF_PROTO_PARAM_INDEX:
-			strncpy(proto_str, begin, p - begin);
+			af_copy_field(proto_str, sizeof(proto_str), begin, p - begin);
 			break;
 		case AF_SRC_PORT_PARAM_INDEX:
-			strncpy(src_port_str, begin, p - begin);
+			af_copy_field(src_port_str, sizeof(src_port_str), begin, p - begin);
 			break;
 		case AF_DST_PORT_PARAM_INDEX:
-			strncpy(dst_port_str, begin, p - begin);
+			af_copy_field(dst_port_str, sizeof(dst_port_str), begin, p - begin);
 			break;
 
 		case AF_HOST_URL_PARAM_INDEX:
-			strncpy(host_url, begin, p - begin);
+			af_copy_field(host_url, sizeof(host_url), begin, p - begin);
 			break;
 
 		case AF_REQUEST_URL_PARAM_INDEX:
-			strncpy(request_url, begin, p - begin);
+			af_copy_field(request_url, sizeof(request_url), begin, p - begin);
 			break;
 		case AF_DICT_PARAM_INDEX:
-			strncpy(dict, begin, p - begin);
+			af_copy_field(dict, sizeof(dict), begin, p - begin);
 			break;
 		case AF_STR_PARAM_INDEX:
-			strncpy(search_str, begin, p - begin);
+			af_copy_field(search_str, sizeof(search_str), begin, p - begin);
 			break;
 		case AF_IGNORE_PARAM_INDEX:
-			strncpy(tmp_buf, begin, p - begin);
+			af_copy_field(tmp_buf, sizeof(tmp_buf), begin, p - begin);
 			ignore = k_atoi(tmp_buf);
 			break;
 		}
@@ -1001,11 +1014,11 @@ int add_app_feature(int appid, char *name, char *feature)
 
 
 	if (param_num == AF_DICT_PARAM_INDEX){
-		strncpy(dict, begin, p - begin);
+		af_copy_field(dict, sizeof(dict), begin, p - begin);
 	}
 
 	if (param_num == AF_IGNORE_PARAM_INDEX){
-		strncpy(tmp_buf, begin, p - begin);
+		af_copy_field(tmp_buf, sizeof(tmp_buf), begin, p - begin);
 		ignore = k_atoi(tmp_buf);
 	}
 
@@ -1148,7 +1161,7 @@ void af_init_feature(char *feature_str)
 	{
 		if (*p == ',')
 		{
-			if (p - begin > MAX_FEATURE_STR_LEN){
+			if (p - begin >= MAX_FEATURE_STR_LEN){
 				printk("error, feature len error %d\n", p - len);
 				break;
 			}
@@ -1161,7 +1174,7 @@ void af_init_feature(char *feature_str)
 	if (p != begin)
 	{
 		
-		if (p - begin > MAX_FEATURE_STR_LEN){
+		if (p - begin >= MAX_FEATURE_STR_LEN){
 			printk("error, feature len error %d\n", p - len);
 		}
 		else{
@@ -1197,9 +1210,10 @@ void load_feature_buf_from_file(char **config_buf)
 	size = inode->i_size;
 	if (size == 0)
 	{
+		filp_close(fp, NULL);
 		return;
 	}
-	*config_buf = (char *)kzalloc(sizeof(char) * size, GFP_ATOMIC);
+	*config_buf = (char *)kzalloc(sizeof(char) * size, GFP_KERNEL);
 	if (NULL == *config_buf)
 	{
 		AF_ERROR("alloc buf fail\n");
@@ -1266,7 +1280,10 @@ static unsigned char *read_skb(struct sk_buff *skb, unsigned int from, unsigned 
 	unsigned char *msg_buf = NULL;
 	unsigned int consumed = 0;
 
-	msg_buf = kmalloc(len, GFP_KERNEL);
+	if (len == 0 || len > MAX_AF_SUPPORT_DATA_LEN)
+		return NULL;
+
+	msg_buf = kmalloc(len, GFP_ATOMIC);
 	if (!msg_buf)
 		return NULL;
 
@@ -1448,30 +1465,32 @@ void dpi_http_proto(flow_info_t *flow)
 		return;
 	}
 
-	for (i = 0; i < data_len; i++)
+	for (i = 0; i + 1 < data_len; i++)
 	{
 		if (data[i] == 0x0d && data[i + 1] == 0x0a)
 		{
-			if (0 == memcmp(&data[start], "POST ", 5))
+			int line_len = i - start;
+
+			if (line_len >= 5 && 0 == memcmp(&data[start], "POST ", 5))
 			{
 				flow->http.match = AF_TRUE;
 				flow->http.method = HTTP_METHOD_POST;
 				flow->http.url_pos = data + start + 5;
 				flow->http.url_len = i - start - 5;
 			}
-			else if (0 == memcmp(&data[start], "GET ", 4))
+			else if (line_len >= 4 && 0 == memcmp(&data[start], "GET ", 4))
 			{
 				flow->http.match = AF_TRUE;
 				flow->http.method = HTTP_METHOD_GET;
 				flow->http.url_pos = data + start + 4;
 				flow->http.url_len = i - start - 4;
 			}
-			else if (0 == memcmp(&data[start], "Host:", 5))
+			else if (line_len >= 6 && 0 == memcmp(&data[start], "Host:", 5))
 			{
 				flow->http.host_pos = data + start + 6;
 				flow->http.host_len = i - start - 6;
 			}
-			if (data[i + 2] == 0x0d && data[i + 3] == 0x0a)
+			if (i + 3 < data_len && data[i + 2] == 0x0d && data[i + 3] == 0x0a)
 			{
 				flow->http.data_pos = data + i + 4;
 				flow->http.data_len = data_len - i - 4;
@@ -1632,7 +1651,7 @@ int af_match_by_url(flow_info_t *flow, af_feature_node_t *node)
 
 	if (af_get_flow_host(flow, reg_url_buf, sizeof(reg_url_buf), &host_len) < 0)
 		reg_url_buf[0] = '\0';
-	if (strlen(reg_url_buf) > 0 && strlen(node->host_url) > 0 && regexp_match(node->host_url, reg_url_buf))
+	if (strlen(reg_url_buf) > 0 && strlen(node->host_url) > 0 && regexp_match(node->host_url, reg_url_buf) == 1)
 	{
 		AF_DEBUG("match url:%s	 reg = %s, appid=%d\n",
 				 reg_url_buf, node->host_url, node->app_id);
@@ -1646,7 +1665,7 @@ int af_match_by_url(flow_info_t *flow, af_feature_node_t *node)
 			memset(reg_url_buf, 0x0, sizeof(reg_url_buf));
 			if (af_copy_dns_domain(flow, i, reg_url_buf, sizeof(reg_url_buf), NULL) < 0)
 				continue;
-			if (strlen(reg_url_buf) > 0 && regexp_match(node->host_url, reg_url_buf))
+			if (strlen(reg_url_buf) > 0 && regexp_match(node->host_url, reg_url_buf) == 1)
 			{
 				flow->match_by_dns = 1;
 				AF_DEBUG("match dns domain:%s	 reg = %s, appid=%d\n",
@@ -1664,7 +1683,7 @@ int af_match_by_url(flow_info_t *flow, af_feature_node_t *node)
 			strncpy(reg_url_buf, flow->http.url_pos, MAX_URL_MATCH_LEN - 1);
 		else
 			strncpy(reg_url_buf, flow->http.url_pos, flow->http.url_len);
-		if (strlen(reg_url_buf) > 0 && strlen(node->request_url) && regexp_match(node->request_url, reg_url_buf))
+		if (strlen(reg_url_buf) > 0 && strlen(node->request_url) && regexp_match(node->request_url, reg_url_buf) == 1)
 		{
 			AF_DEBUG("match request:%s   reg:%s appid=%d\n",
 					 reg_url_buf, node->request_url, node->app_id);
@@ -1771,6 +1790,7 @@ int fwx_match_feature(flow_info_t *flow)
 
 		flow->app_id = node->app_id;
 		flow->feature = node;
+		flow->ignore = node->ignore;
 		strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
 		feature_list_read_unlock();
 		return AF_TRUE;
@@ -1781,6 +1801,7 @@ int fwx_match_feature(flow_info_t *flow)
 		AF_LMT_INFO("match dns regex feature, appid=%d, feature = %s\n", node->app_id, node->feature);
 		flow->app_id = node->app_id;
 		flow->feature = node;
+		flow->ignore = node->ignore;
 		strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
 		feature_list_read_unlock();
 		return AF_TRUE;
@@ -1791,6 +1812,7 @@ int fwx_match_feature(flow_info_t *flow)
 		AF_LMT_DEBUG("match feature, appid=%d, feature = %s\n", node->app_id, node->feature);
 		flow->app_id = node->app_id;
 		flow->feature = node;
+		flow->ignore = node->ignore;
 		strncpy(flow->app_name, node->app_name, sizeof(flow->app_name) - 1);
 		feature_list_read_unlock();
 		return AF_TRUE;
@@ -1800,6 +1822,7 @@ int fwx_match_feature(flow_info_t *flow)
 		AF_LMT_INFO("feature miss, ac_state_steps=%u, ac_fail_jumps=%u, ac_candidate_checks=%u, fallback_checks=%u\n",
 			stat.ac_state_steps, stat.ac_fail_jumps, stat.ac_candidate_checks, stat.fallback_checks);
 	}
+	flow->feature = NULL;
 	feature_list_read_unlock();
 	return AF_FALSE;
 }
@@ -1950,9 +1973,10 @@ int match_app_filter_rule(int appid, af_client_info_t *client)
 		return AF_FALSE;
 	}
 
-	app_filter_rule_t *rule = fwx_match_app_filter_rule(appid, client->mac);
-	if (rule) {
-		AF_LMT_INFO("drop appid = %d, rule_id = %d\n", appid, rule->rule_id);
+	int rule_id = 0;
+
+	if (fwx_match_app_filter_rule(appid, client->mac, &rule_id)) {
+		AF_LMT_INFO("drop appid = %d, rule_id = %d\n", appid, rule_id);
 		return AF_TRUE;
 	}
 	return AF_FALSE;
@@ -1970,9 +1994,10 @@ int match_mac_filter_rule(af_client_info_t *client)
 		return AF_FALSE;
 	}
 
-	mac_filter_rule_t *rule = fwx_match_mac_filter_rule(client->mac);
-	if (rule) {
-		AF_LMT_INFO("drop mac, rule_id = %d, mac = " MAC_FMT "\n", rule->rule_id, MAC_ARRAY(client->mac));
+	int rule_id = 0;
+
+	if (fwx_match_mac_filter_rule(client->mac, &rule_id)) {
+		AF_LMT_INFO("drop mac, rule_id = %d, mac = " MAC_FMT "\n", rule_id, MAC_ARRAY(client->mac));
 		return AF_TRUE;
 	}
 	return AF_FALSE;
@@ -2205,6 +2230,15 @@ u_int32_t check_app_action_changed(int action, u_int32_t app_id, af_client_info_
 	return changed;
 }
 
+/*
+ * Lifetime contract for af_client_info_t pointers that keep being used after
+ * the client lock is dropped below: netfilter hooks always run inside the
+ * netfilter core's rcu_read_lock() section, and both hooks refresh
+ * client->update_jiffies while still holding the client lock, so an entry
+ * cannot expire while this packet is being processed. fwx_client.c must keep
+ * freeing client entries via call_rcu() to preserve this invariant.
+ */
+
 u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 {
 	flow_info_t flow;
@@ -2265,6 +2299,7 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 	spin_lock(&af_conn_lock);
    	conn = af_conn_find_and_add(flow.src, flow.dst, flow.sport, flow.dport, flow.l4_protocol);
 	if (!conn){
+		spin_unlock(&af_conn_lock);
 		return NF_ACCEPT;
 	}
 
@@ -2294,7 +2329,7 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 				return NF_ACCEPT;
 			}
 		}
-		if (skb_is_nonlinear(skb) && flow.l4_len < MAX_AF_SUPPORT_DATA_LEN)
+		if (skb_is_nonlinear(skb) && flow.l4_len > 0 && flow.l4_len < MAX_AF_SUPPORT_DATA_LEN)
 		{
 			flow.l4_data = read_skb(skb, flow.l4_data - skb->data, flow.l4_len);
 			if (!flow.l4_data)
@@ -2320,8 +2355,8 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 				conn->ignore = 1;
 			}
 			else{
-				if (flow.feature && flow.feature->ignore){
-					AF_LMT_DEBUG("match ignore feature, feature = %s, appid = %d\n", flow.feature->feature ,flow.app_id);
+				if (flow.ignore){
+					AF_LMT_DEBUG("match ignore feature, appid = %d\n", flow.app_id);
 					conn->ignore = 1;
 				}
 				else{
@@ -2490,7 +2525,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	if (total_packets > MAX_DPI_PKT_NUM)
 		return NF_ACCEPT;
 
-	if (skb_is_nonlinear(skb) && flow.l4_len < MAX_AF_SUPPORT_DATA_LEN)
+	if (skb_is_nonlinear(skb) && flow.l4_len > 0 && flow.l4_len < MAX_AF_SUPPORT_DATA_LEN)
 	{
 		flow.l4_data = read_skb(skb, flow.l4_data - skb->data, flow.l4_len);
 		if (!flow.l4_data)
@@ -2517,7 +2552,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 		if (flow.app_id < 1000){
 			flow.ignore = 1;
 		}
-		else if (flow.feature && flow.feature->ignore){
+		else if (flow.ignore){
 			fwx_ct_set_bit(ct, FWX_CT_IGNORE_BIT, 1);
 			flow.ignore = 1;
 			AF_LMT_DEBUG("gateway set ignore bit, mark = 0x%x\n", fwx_ct_mark_get(ct));
@@ -2682,11 +2717,6 @@ static void fwx_timer_func(struct timer_list *t)
 static void fwx_timer_func(unsigned long ptr)
 #endif
 {
-	static int count = 0;
-	if (count % 60 == 0)
-		check_client_expire();
-
-	count++;
 	af_conn_clean_timeout();
 
 	mod_timer(&fwx_timer, jiffies + FWX_TIMER_INTERVAL * HZ);
@@ -2803,6 +2833,8 @@ static void fwx_netlink_msg_rcv(struct sk_buff *skb)
 			return;
 		if (af_hdr->len <= 0 || af_hdr->len >= MAX_FWX_NETLINK_MSG_LEN)
 			return;
+		if (skb->len < nlmsg_total_size(sizeof(struct af_msg_hdr) + af_hdr->len))
+			return;
 		udata = umsg + sizeof(struct af_msg_hdr);
 
 		if (udata)
@@ -2835,7 +2867,10 @@ static int __init fwx_init(void)
 {
 	int err;
 	af_conn_init();
-	netlink_fwx_init();
+	if (netlink_fwx_init() < 0) {
+		af_conn_exit();
+		return -1;
+	}
 	af_log_init();
 	init_af_client_procfs();
 	af_client_init();
@@ -2868,6 +2903,7 @@ static void fwx_fini(void)
 #else
 	nf_unregister_hooks(fwx_ops, ARRAY_SIZE(fwx_ops));
 #endif
+	af_client_exit();
 	finit_af_client_procfs();
 	af_active_app_clean_procfs();
 	af_active_host_clean_procfs();
@@ -2875,7 +2911,6 @@ static void fwx_fini(void)
 	af_clear_active_app_list();
 	af_clear_active_host_list();
 	af_log_exit();
-	af_client_exit();
 	fwx_app_filter_exit();
 	fwx_mac_filter_exit();
 	fwx_unregister_dev();

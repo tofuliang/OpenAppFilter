@@ -10,7 +10,6 @@ if not has_jsonc then
 end
 
 local CHECK_INTERVAL = 10  
-local LOG_FILE = "/tmp/log/rule_manager.log" 
 local SINGLE_MAC_FILTER_RULE_ID = 101  
 local BLACKLIST_MAC_FILTER_RULE_ID = 102
 local USER_PARENTAL_CONTROL_STATUS_FILE = "/tmp/fwx_cache/user_parental_control_status"
@@ -38,20 +37,9 @@ local appfilter_enable_state = nil
 local macfilter_enable_state = nil
 local record_enable_state = nil  
 
-local function ensure_log_dir()
-    os.execute(string.format("mkdir -p %s", string.match(LOG_FILE, "^(.*)/")))
-end
-
 local function log(message)
-    ensure_log_dir()
     local timestamp = os.date("%Y-%m-%d %H:%M:%S")
     local log_msg = string.format("[%s] %s\n", timestamp, message)
-	-- for debug
-    --local file = io.open(LOG_FILE, "a")
-    --if file then
-    --   file:write(log_msg)
-    --  file:close()
-    --end
     print(log_msg)
 end
 
@@ -2030,6 +2018,7 @@ local function initialize_rules()
 end
 
 local function main_loop()
+    os.execute("mkdir -p /tmp/log")
     log("Rule manager started")
     
     initialize_rules()

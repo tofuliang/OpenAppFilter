@@ -3121,7 +3121,8 @@
 
     var $activeTerminalList = $('#active-terminal-list');
     var activeUsersData = [];
-    var activeUsersByMac = {};
+    var activeUsersByMac = new Map();
+    var MAX_CACHED_USERS = 128;
 
     function floorFixed(value, digits) {
         var scale = Math.pow(10, digits);
@@ -3212,13 +3213,21 @@
                 return;
             }
 
-            activeUsersByMac[key] = $.extend({}, activeUsersByMac[key] || {}, user);
+            var cached = activeUsersByMac.get(key) || {};
+            activeUsersByMac.delete(key);
+            activeUsersByMac.set(key, {
+                nickname: user.nickname !== undefined ? user.nickname : cached.nickname,
+                hostname: user.hostname !== undefined ? user.hostname : cached.hostname
+            });
+            if (activeUsersByMac.size > MAX_CACHED_USERS) {
+                activeUsersByMac.delete(activeUsersByMac.keys().next().value);
+            }
         });
     }
 
     function getCachedUserByMac(mac) {
         var key = normalizeMacKey(mac);
-        return key ? (activeUsersByMac[key] || null) : null;
+        return key ? (activeUsersByMac.get(key) || null) : null;
     }
 
     function truncateMiddle(value, maxLength) {
@@ -3415,19 +3424,6 @@
                 .addClass('app-name')
                 .text(formatActiveAppName(appFullName))
                 .attr('title', appFullName);
-            if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
-                window.OAFIcon.bindFeatureHover($iconWrap.add($nameSpan), {
-                    appid: appId,
-                    name: appFullName,
-                    apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
-                    texts: {
-                        loading: '<%:Loading...%>',
-                        error: '<%:Load failed%>',
-                        empty: '<%:No Data%>',
-                        titleSuffix: '<%:Feature Rules%>'
-                    }
-                });
-            }
             var $tooltip = $('<div>').addClass('tooltip tooltip-top tooltip-arrow-center tooltip-center-x');
 
             var timestamp = app.timestamp ? formatTime(app.timestamp * 1000) : formatTime(Date.now());
@@ -3442,6 +3438,20 @@
             if(app.dst_port) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _DestinationPort + ':</span><span class="tooltip-value">'+escapeHtml(app.dst_port)+'</span></div>';
             if(app.domain) tooltipHtml += '<div class="tooltip-row"><span class="tooltip-label">' + _MatchedDomain + ':</span><span class="tooltip-value">'+escapeHtml(app.domain)+'</span></div>';
             $tooltip.html(tooltipHtml);
+            if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+                window.OAFIcon.bindFeatureHover($iconWrap.add($nameSpan), {
+                    appid: appId,
+                    name: appFullName,
+                    apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                    container: $tooltip,
+                    texts: {
+                        loading: '<%:Loading...%>',
+                        error: '<%:Load failed%>',
+                        empty: '<%:No Data%>',
+                        titleSuffix: '<%:Feature Rules%>'
+                    }
+                });
+            }
             $appItem.append($iconWrap).append($nameSpan).append($tooltip);
             $container.append($appItem);
         });
@@ -3650,8 +3660,7 @@
             $item.attr('title', titleParts.join(': '));
         }
 
-        var hostKey = (host.mac || '') + '|' + (fullUrl || '') + '|' + (host.timestamp || 0);
-        $item.data('host-key', hostKey);
+        $item.data('host-key', getHostKey(host));
 
         return $item;
     }
@@ -3706,7 +3715,7 @@
         }
 
         if(isRenderingHosts) {
-            pendingHostQueue = pendingHostQueue.concat(newHosts);
+            pendingHostQueue = pendingHostQueue.concat(newHosts).slice(-MAX_DISPLAY_HOSTS);
             return;
         }
 
@@ -3759,7 +3768,9 @@
         if(hostList && hostList.length > 0) {
             hostList.forEach(function(newHost) {
                 var newKey = getHostKey(newHost);
-                if(currentKeys.indexOf(newKey) === -1 && cachedHostKeys.indexOf(newKey) === -1) {
+                if(currentKeys.indexOf(newKey) === -1 && cachedHostKeys.indexOf(newKey) === -1 &&
+                   !pendingHostQueue.some(function(host) { return getHostKey(host) === newKey; }) &&
+                   !newHosts.some(function(host) { return getHostKey(host) === newKey; })) {
                     newHosts.push(newHost);
                 }
             });

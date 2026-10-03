@@ -41,7 +41,7 @@ int fwx_add_mac_to_rule(int rule_id, const unsigned char *mac);
 
 int fwx_del_mac_from_rule(int rule_id, const unsigned char *mac);
 
-mac_filter_rule_t *fwx_match_mac_filter_rule(const unsigned char *mac);
+int fwx_match_mac_filter_rule(const unsigned char *mac, int *rule_id);
 
 int fwx_api_add_mac_filter_rule(cJSON *data_obj);
 

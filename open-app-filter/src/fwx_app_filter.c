@@ -92,13 +92,39 @@ static int normalize_app_id_token(const char *raw, char *out, int out_len) {
     return 0;
 }
 
+static int format_time_rule_value(struct json_object *weekdays, struct json_object *start_obj,
+                                  struct json_object *end_obj, char *out, size_t out_len) {
+    size_t used = 0;
+    const char *start = json_object_get_string(start_obj);
+    const char *end = json_object_get_string(end_obj);
+    if (!start || !end || !out_len)
+        return -1;
+
+    for (int i = 0; i < json_object_array_length(weekdays); i++) {
+        int n = snprintf(out + used, out_len - used, "%s%d", i ? "," : "",
+                         json_object_get_int(json_object_array_get_idx(weekdays, i)));
+        if (n < 0 || (size_t)n >= out_len - used)
+            return -1;
+        used += n;
+    }
+    int n = snprintf(out + used, out_len - used, ",%s,%s", start, end);
+    return n >= 0 && (size_t)n < out_len - used ? 0 : -1;
+}
+
 struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
     struct json_object *data_obj = json_object_new_object();
     struct json_object *rules_array = json_object_new_array();
+    if (!data_obj || !rules_array) {
+        if (data_obj) json_object_put(data_obj);
+        if (rules_array) json_object_put(rules_array);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
     
     struct uci_context *uci_ctx = uci_alloc_context();
     if (!uci_ctx) {
         LOG_ERROR("Failed to allocate UCI context\n");
+        json_object_put(data_obj);
+        json_object_put(rules_array);
         return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
 
@@ -107,6 +133,8 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
     if (uci_load(uci_ctx, "appfilter", &pkg) != UCI_OK) {
         LOG_ERROR("Failed to load appfilter package\n");
         uci_free_context(uci_ctx);
+        json_object_put(data_obj);
+        json_object_put(rules_array);
         return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
 
@@ -153,6 +181,10 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
 
         // Process time_rule list
         struct json_object *time_rules_array = json_object_new_array();
+        if (!time_rules_array) {
+            json_object_put(rule_obj);
+            continue;
+        }
         struct uci_option *time_rule_opt = uci_lookup_option(uci_ctx, s, "time_rule");
         if (time_rule_opt && time_rule_opt->type == UCI_TYPE_LIST) {
             struct uci_element *time_elem;
@@ -163,6 +195,11 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
                 LOG_DEBUG("Loading time_rule: %s\n", time_rule_str);
                 struct json_object *time_rule_obj = json_object_new_object();
                 struct json_object *weekdays_array = json_object_new_array();
+                if (!time_rule_obj || !weekdays_array) {
+                    if (time_rule_obj) json_object_put(time_rule_obj);
+                    if (weekdays_array) json_object_put(weekdays_array);
+                    continue;
+                }
 
                 // Parse time_rule string: "weekday1,weekday2,...,start_time,end_time"
                 char *time_rule_copy = strdup(time_rule_str);
@@ -208,6 +245,10 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
 
         // Process app_id list（支持字符串段格式：1001-1005）
         struct json_object *app_ids_array = json_object_new_array();
+        if (!app_ids_array) {
+            json_object_put(rule_obj);
+            continue;
+        }
         struct uci_option *app_id_opt = uci_lookup_option(uci_ctx, s, "app_id");
         if (app_id_opt && app_id_opt->type == UCI_TYPE_LIST) {
             struct uci_element *app_elem;
@@ -314,18 +355,9 @@ struct json_object *fwx_api_add_filter_rule(struct json_object *req_obj) {
         
 
         char time_rule_str[256] = {0};
-        int weekdays_len = json_object_array_length(weekdays_obj);
-        for (j = 0; j < weekdays_len; j++) {
-            struct json_object *weekday_obj = json_object_array_get_idx(weekdays_obj, j);
-            char weekday_str[16];
-            snprintf(weekday_str, sizeof(weekday_str), "%d", json_object_get_int(weekday_obj));
-            if (j > 0) strcat(time_rule_str, ",");
-            strcat(time_rule_str, weekday_str);
-        }
-        strcat(time_rule_str, ",");
-        strcat(time_rule_str, json_object_get_string(start_time_obj));
-        strcat(time_rule_str, ",");
-        strcat(time_rule_str, json_object_get_string(end_time_obj));
+        if (format_time_rule_value(weekdays_obj, start_time_obj, end_time_obj,
+                                   time_rule_str, sizeof(time_rule_str)) != 0)
+            continue;
         
         snprintf(buf, sizeof(buf), "appfilter.@rule[-1].time_rule");
         fwx_uci_add_list(uci_ctx, buf, time_rule_str);
@@ -444,18 +476,9 @@ struct json_object *fwx_api_update_filter_rule(struct json_object *req_obj) {
             }
             
             char time_rule_str[256] = {0};
-            int weekdays_len = json_object_array_length(weekdays_obj);
-            for (j = 0; j < weekdays_len; j++) {
-                struct json_object *weekday_obj = json_object_array_get_idx(weekdays_obj, j);
-                char weekday_str[16];
-                snprintf(weekday_str, sizeof(weekday_str), "%d", json_object_get_int(weekday_obj));
-                if (j > 0) strcat(time_rule_str, ",");
-                strcat(time_rule_str, weekday_str);
-            }
-            strcat(time_rule_str, ",");
-            strcat(time_rule_str, json_object_get_string(start_time_obj));
-            strcat(time_rule_str, ",");
-            strcat(time_rule_str, json_object_get_string(end_time_obj));
+            if (format_time_rule_value(weekdays_obj, start_time_obj, end_time_obj,
+                                       time_rule_str, sizeof(time_rule_str)) != 0)
+                continue;
             
             snprintf(buf, sizeof(buf), "appfilter.@rule[%d].time_rule", index);
             fwx_uci_add_list(uci_ctx, buf, time_rule_str);
@@ -529,14 +552,22 @@ struct json_object *fwx_api_get_appfilter_whitelist(struct json_object *req_obj)
 
 	int i;
     struct json_object *data_obj = json_object_new_object();
+    if (!data_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     
     struct uci_context *uci_ctx = uci_alloc_context();
     if (!uci_ctx) {
         LOG_ERROR("Failed to allocate UCI context\n");
+        json_object_put(data_obj);
         return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
 
     struct json_object *mac_array = json_object_new_array();
+    if (!mac_array) {
+        uci_free_context(uci_ctx);
+        json_object_put(data_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
     char mac_str[128] = {0};
     int num = fwx_uci_get_list_num(uci_ctx, "appfilter_whitelist", "whitelist_mac");
     for (i = 0; i < num; i++) {
@@ -630,6 +661,8 @@ struct json_object *fwx_api_add_appfilter_whitelist(struct json_object *req_obj)
 
 struct json_object *fwx_api_get_app_filter_adv(struct json_object *req_obj) {
     struct json_object *data_obj = json_object_new_object();
+    if (!data_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     
     struct uci_context *uci_ctx = uci_alloc_context();
     if (!uci_ctx) {

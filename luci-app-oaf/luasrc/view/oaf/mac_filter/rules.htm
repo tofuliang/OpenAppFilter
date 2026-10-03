@@ -1540,8 +1540,9 @@ $(document).ready(function() {
         return $container;
     }
     
+    var closeTimeChart = null;
     function showTimeChart($btn) {
-        $('.time-chart-popup').remove();
+        if (closeTimeChart) closeTimeChart();
         
         var timeRules = JSON.parse($btn.data('time-rules'));
         if (!timeRules || timeRules.length === 0) {
@@ -1610,32 +1611,35 @@ $(document).ready(function() {
         
         $('body').append($popup);
         
+        var closeTimer = null;
         var clickHandler = function(e) {
             if (!$(e.target).closest('.time-chart-popup, .more-time-btn').length) {
-                $('.time-chart-popup').remove();
-                $(document).off('click.timechart', clickHandler);
+                closeTimeChart();
             }
+        };
+        closeTimeChart = function() {
+            if (closeTimer) clearTimeout(closeTimer);
+            $btn.off('.timechart');
+            $(document).off('click.timechart', clickHandler);
+            $popup.remove();
+            closeTimeChart = null;
         };
         $(document).on('click.timechart', clickHandler);
-        
-        var closeTimer;
+
         var mouseLeaveHandler = function() {
-            closeTimer = setTimeout(function() {
-                $('.time-chart-popup').remove();
-                $(document).off('click.timechart', clickHandler);
-            }, 300);
+            if (closeTimer) clearTimeout(closeTimer);
+            closeTimer = setTimeout(function() { closeTimeChart(); }, 300);
         };
-        
+
         var mouseEnterHandler = function() {
-            if (closeTimer) {
-                clearTimeout(closeTimer);
-            }
+            if (closeTimer) clearTimeout(closeTimer);
+            closeTimer = null;
         };
-        
-        $btn.on('mouseleave', mouseLeaveHandler);
-        $popup.on('mouseleave', mouseLeaveHandler);
-        $btn.on('mouseenter', mouseEnterHandler);
-        $popup.on('mouseenter', mouseEnterHandler);
+
+        $btn.on('mouseleave.timechart', mouseLeaveHandler);
+        $popup.on('mouseleave.timechart', mouseLeaveHandler);
+        $btn.on('mouseenter.timechart', mouseEnterHandler);
+        $popup.on('mouseenter.timechart', mouseEnterHandler);
     }
     
     function editRule(ruleId) {

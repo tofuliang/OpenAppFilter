@@ -541,6 +541,15 @@ int init_af_client_procfs(void)
 {
     struct proc_dir_entry *pde;
     struct net *net = &init_net;
+
+    mutex_lock(&af_client_base_dir_mutex);
+    g_af_client_base_dir = proc_mkdir(AF_CLIENT_BASE_DIR, net->proc_net);
+    mutex_unlock(&af_client_base_dir_mutex);
+    if (!g_af_client_base_dir) {
+        AF_ERROR("create af_client base dir failed\n");
+        return -1;
+    }
+
     pde = proc_create(AF_CLIENT_PROC_STR, 0440, net->proc_net, &af_client_fops);
 
     if (!pde)
@@ -567,33 +576,21 @@ int init_af_client_procfs(void)
 
 void finit_af_client_procfs(void)
 {
-    struct net *net = &init_net;
-    int i;
-    af_client_info_t *client;
-    
+	struct net *net = &init_net;
+
+	/* Client subdirectories remain live until af_client_exit drains work. */
+	remove_proc_entry(AF_CLIENT_PROC_STR, net->proc_net);
+	remove_proc_entry(AF_VISIT_INFO, net->proc_net);
+	remove_proc_entry(AF_CLIENT_VISIT_LIST, net->proc_net);
+}
+
+void remove_af_client_base_dir(void)
+{
     mutex_lock(&af_client_base_dir_mutex);
-    
-
     if (g_af_client_base_dir) {
-        AF_CLIENT_LOCK_R();
-        for (i = 0; i < MAX_AF_CLIENT_HASH_SIZE; i++) {
-            list_for_each_entry(client, &af_client_list_table[i], hlist) {
-                if (client && client->proc_dir) {
-                    remove_client_proc_dir(client);
-                }
-            }
-        }
-        AF_CLIENT_UNLOCK_R();
+		remove_proc_entry(AF_CLIENT_BASE_DIR, init_net.proc_net);
+        g_af_client_base_dir = NULL;
     }
-    
-
-    remove_proc_entry(AF_CLIENT_PROC_STR, net->proc_net);
-    remove_proc_entry(AF_VISIT_INFO, net->proc_net);
-    remove_proc_entry(AF_CLIENT_VISIT_LIST, net->proc_net);
-    
-
-    remove_proc_entry(AF_CLIENT_BASE_DIR, net->proc_net);
-    g_af_client_base_dir = NULL;  // 重置静态变量
     mutex_unlock(&af_client_base_dir_mutex);
 }
 
@@ -814,25 +811,16 @@ int create_client_proc_dir(af_client_info_t *client)
 	struct proc_dir_entry *client_dir;
 	struct proc_dir_entry *visit_file;
 	char mac_str[32] = {0};
-	struct net *net = &init_net;
 	
 	if (!client)
 		return -1;
 	
 	sprintf(mac_str, MAC_FMT, MAC_ARRAY(client->mac));
 	
-	mutex_lock(&af_client_base_dir_mutex);
 	if (!g_af_client_base_dir) {
-
-		g_af_client_base_dir = proc_mkdir(AF_CLIENT_BASE_DIR, net->proc_net);
-		if (!g_af_client_base_dir) {
-			mutex_unlock(&af_client_base_dir_mutex);
-			AF_ERROR("create af_client base dir failed\n");
-			return -1;
-		}
+		AF_ERROR("af_client base dir not ready: %s\n", mac_str);
+		return -1;
 	}
-	mutex_unlock(&af_client_base_dir_mutex);
-	
 	client_dir = proc_mkdir_data(mac_str, 0555, g_af_client_base_dir, client);
 	if (!client_dir) {
 		AF_ERROR("create client dir failed: %s\n", mac_str);

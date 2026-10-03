@@ -61,7 +61,7 @@ int fwx_add_app_id_to_rule(int rule_id, int app_id);
 int fwx_del_app_id_from_rule(int rule_id, int app_id);
 
 
-app_filter_rule_t *fwx_match_app_filter_rule(int app_id, const unsigned char *mac);
+int fwx_match_app_filter_rule(int app_id, const unsigned char *mac, int *rule_id);
 
 
 int fwx_api_add_app_filter_rule(cJSON *data_obj);

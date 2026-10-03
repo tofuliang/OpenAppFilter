@@ -104,8 +104,41 @@
 
     var featureDetailCache = Object.create(null);
     var activeFeatureTrigger = null;
+    var activeFeaturePopover = null;
     var featureHideTimer = null;
     var featurePopover = null;
+
+    function configuredFeatureContainer(trigger) {
+        var configured = trigger ? $(trigger).data('oafFeatureContainer') : null;
+        if (!configured) {
+            return null;
+        }
+        if (configured.jquery) {
+            return configured[0] || null;
+        }
+        return configured.nodeType ? configured : null;
+    }
+
+    function featurePopoverForTrigger(trigger) {
+        return configuredFeatureContainer(trigger) || ensureFeaturePopover();
+    }
+
+    function isInlineFeaturePopover(popover) {
+        return !!(popover && popover !== featurePopover);
+    }
+
+    function featureContentContainer(popover) {
+        if (!isInlineFeaturePopover(popover)) {
+            return $(popover).empty();
+        }
+
+        var $content = $(popover).children('.oaf-feature-detail-inline');
+        if (!$content.length) {
+            $content = $('<div>').addClass('oaf-feature-detail-inline');
+            $(popover).append($content);
+        }
+        return $content.empty();
+    }
 
     var defaultFeatureTexts = {
         loading: 'Loading...',
@@ -172,6 +205,7 @@
                 'color:var(--text-color-high,#333);box-shadow:0 8px 24px rgba(0,0,0,.18);' +
                 'font-size:13px;line-height:1.45;pointer-events:auto;}' +
             '.oaf-feature-detail-popover.show{display:block;}' +
+            '.oaf-feature-detail-inline{margin-top:8px;padding-top:8px;border-top:1px solid var(--tooltip-border,var(--border-color-low,#e5e7eb));}' +
             '.oaf-feature-detail-title{font-weight:600;margin-bottom:6px;overflow-wrap:anywhere;' +
                 'word-break:break-word;}' +
             '.oaf-feature-detail-empty{color:var(--text-color-medium,#6b7280);overflow-wrap:anywhere;' +
@@ -197,8 +231,8 @@
     }
 
     function featurePopoverContains(target) {
-        return !!(featurePopover && target &&
-            (target === featurePopover || featurePopover.contains(target)));
+        var popover = activeFeaturePopover || featurePopover;
+        return !!(popover && target && (target === popover || popover.contains(target)));
     }
 
     function featureTriggerHasFocus(trigger) {
@@ -206,27 +240,27 @@
     }
 
     function renderFeaturePopover(trigger, entry) {
-        var popover = ensureFeaturePopover();
-        var $popover = $(popover).empty();
+        var popover = featurePopoverForTrigger(trigger);
+        var $content = featureContentContainer(popover);
         var name = $(trigger).attr('data-oaf-feature-name') || '';
         var texts = $(trigger).data('oafFeatureTexts') || defaultFeatureTexts;
         var title = name ? name + ' - ' + texts.titleSuffix : texts.titleSuffix;
 
-        $popover.append($('<div>').addClass('oaf-feature-detail-title').text(title));
+        $content.append($('<div>').addClass('oaf-feature-detail-title').text(title));
         if (!entry || entry.state === 'loading' || entry.state === 'idle') {
-            $popover.append($('<div>').addClass('oaf-feature-detail-empty').text(texts.loading));
+            $content.append($('<div>').addClass('oaf-feature-detail-empty').text(texts.loading));
         } else if (entry.state !== 'loaded') {
-            $popover.append($('<div>').addClass('oaf-feature-detail-empty').text(texts.error));
+            $content.append($('<div>').addClass('oaf-feature-detail-empty').text(texts.error));
         } else if (!Array.isArray(entry.features) || entry.features.length === 0) {
-            $popover.append($('<div>').addClass('oaf-feature-detail-empty').text(texts.empty));
+            $content.append($('<div>').addClass('oaf-feature-detail-empty').text(texts.empty));
         } else {
             entry.features.forEach(function(rule) {
-                $popover.append($('<div>').addClass('oaf-feature-detail-rule')
+                $content.append($('<div>').addClass('oaf-feature-detail-rule')
                     .text(rule === undefined || rule === null ? '' : String(rule)));
             });
         }
 
-        $popover.attr('aria-busy', entry && entry.state === 'loading' ? 'true' : 'false');
+        $(popover).attr('aria-busy', entry && entry.state === 'loading' ? 'true' : 'false');
         return popover;
     }
 
@@ -238,7 +272,11 @@
             return;
         }
 
-        var popover = ensureFeaturePopover();
+        var popover = activeFeaturePopover || featurePopoverForTrigger(activeFeatureTrigger);
+        if (isInlineFeaturePopover(popover)) {
+            return;
+        }
+
         var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
         var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
         var padding = 8;
@@ -348,16 +386,22 @@
         }
 
         activeFeatureTrigger = trigger;
+        activeFeaturePopover = featurePopoverForTrigger(trigger);
         var entry = featureEntry(appId);
         if (entry.state === 'idle') {
             entry = requestFeatureDetail(trigger, appId);
         }
 
-        renderFeaturePopover(trigger, entry);
-        var popover = ensureFeaturePopover();
-        $(trigger).attr({'aria-expanded': 'true', 'aria-describedby': popover.id});
-        popover.classList.add('show');
-        popover.setAttribute('aria-hidden', 'false');
+        var popover = renderFeaturePopover(trigger, entry);
+        var attributes = {'aria-expanded': 'true'};
+        if (popover.id) {
+            attributes['aria-describedby'] = popover.id;
+        }
+        $(trigger).attr(attributes);
+        if (!isInlineFeaturePopover(popover)) {
+            popover.classList.add('show');
+            popover.setAttribute('aria-hidden', 'false');
+        }
         positionFeaturePopover();
     }
 
@@ -370,10 +414,11 @@
             $(activeFeatureTrigger).attr('aria-expanded', 'false').removeAttr('aria-describedby');
         }
         activeFeatureTrigger = null;
-        if (featurePopover) {
-            featurePopover.classList.remove('show');
-            featurePopover.setAttribute('aria-hidden', 'true');
+        if (activeFeaturePopover && !isInlineFeaturePopover(activeFeaturePopover)) {
+            activeFeaturePopover.classList.remove('show');
+            activeFeaturePopover.setAttribute('aria-hidden', 'true');
         }
+        activeFeaturePopover = null;
     }
 
     function scheduleHideFeaturePopover(trigger) {
@@ -383,7 +428,7 @@
         featureHideTimer = setTimeout(function() {
             featureHideTimer = null;
             if (activeFeatureTrigger !== trigger || featureTriggerHasFocus(trigger) ||
-                $(trigger).is(':hover') || $(featurePopover).is(':hover')) {
+                $(trigger).is(':hover') || (activeFeaturePopover && $(activeFeaturePopover).is(':hover'))) {
                 return;
             }
             hideFeaturePopover();
@@ -424,7 +469,8 @@
                 'data-oaf-feature-api': apiUrl || '',
                 'aria-haspopup': 'true',
                 'aria-expanded': 'false'
-            }).data('oafFeatureTexts', texts);
+            }).data('oafFeatureTexts', texts)
+                .data('oafFeatureContainer', config.container || null);
             if (!$element.attr('aria-label') && appName) {
                 $element.attr('aria-label', String(appName));
             }

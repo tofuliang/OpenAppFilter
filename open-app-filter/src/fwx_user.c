@@ -40,7 +40,13 @@ unsigned long long g_daily_type_stats[MAX_APP_TYPE] = {0};
 u_int32_t g_daily_stat_date = 0;  
 
 
-LIST_HEAD(global_hourly_records);
+#define HOURLY_APP_SECONDS 3600
+#define HOURLY_APP_SLOTS (HOURLY_APP_SECONDS + 1)
+typedef struct {
+    u_int32_t timestamp;
+    unsigned long long type_time[MAX_APP_TYPE];
+} hourly_app_type_bucket_t;
+static hourly_app_type_bucket_t g_hourly_app_type_buckets[HOURLY_APP_SLOTS];
 
 
 traffic_stat_t g_global_hourly_traffic[HOURS_PER_DAY] = {{0}};
@@ -51,6 +57,7 @@ u_int32_t g_global_traffic_date = 0;
 #define MAX_WIRELESS_IFACE_NUM 32
 #define MAX_WIRELESS_IFNAME_LEN 64
 #define MAX_WIRELESS_BAND_LEN 16
+#define MAX_WIRELESS_COMMAND_OUTPUT (1024 * 1024)
 
 static char g_client_data_base_dir[256] = {0};
 static int g_client_data_base_dir_initialized = 0;
@@ -482,6 +489,8 @@ void save_client_backup_to_file(client_node_t *client) {
     build_client_backup_file_path(client->mac, file_path, sizeof(file_path));
 
     json_obj = json_object_new_object();
+    if (!json_obj)
+        return;
     json_object_object_add(json_obj, "mac", json_object_new_string(client->mac));
     json_object_object_add(json_obj, "ip", json_object_new_string(client->ip));
     json_object_object_add(json_obj, "ipv6", json_object_new_string(client->ipv6));
@@ -1934,11 +1943,14 @@ void update_client_hostname(void)
     {
         if (strlen(line_buf) <= 16)
             continue;
-        sscanf(line_buf, "%*s %s %s %s", mac_buf, ip_buf, hostname_buf);
+        if (sscanf(line_buf, "%*s %31s %31s %127s", mac_buf, ip_buf, hostname_buf) != 3)
+            continue;
         client_node_t *node = find_client_node(mac_buf);
         if (!node)
         {
             node = add_client_node(mac_buf);
+            if (!node)
+                continue;
             strncpy(node->ip, ip_buf, sizeof(node->ip));
             node->online = 0;
             node->offline_time = get_timestamp();
@@ -1946,7 +1958,7 @@ void update_client_hostname(void)
 
         if (strlen(hostname_buf) > 0 && hostname_buf[0] != '*')
         {
-            strncpy(node->hostname, hostname_buf, sizeof(node->hostname));
+            snprintf(node->hostname, sizeof(node->hostname), "%s", hostname_buf);
         }
     }
     fclose(fp);
@@ -2010,7 +2022,13 @@ static char *get_command_output(const char *cmd)
         size_t remain = buf_size - total_read - 1;
         if (remain < 512) {
             char *new_buf = NULL;
-            buf_size *= 2;
+            if (buf_size >= MAX_WIRELESS_COMMAND_OUTPUT + 1) {
+                free(buf);
+                pclose(fp);
+                return NULL;
+            }
+            buf_size = buf_size > (MAX_WIRELESS_COMMAND_OUTPUT + 1) / 2
+                ? MAX_WIRELESS_COMMAND_OUTPUT + 1 : buf_size * 2;
             new_buf = (char *)realloc(buf, buf_size);
             if (!new_buf) {
                 free(buf);
@@ -2538,6 +2556,7 @@ void flush_expire_client_node(void)
     client_node_t *node = NULL, *tmp = NULL;
     visit_info_t *p_info = NULL, *tmp_info = NULL;
     visit_stat_t *stat_node = NULL, *tmp_stat_node = NULL;
+    online_offline_record_t *record = NULL, *tmp_record = NULL;
 
     list_for_each_entry_safe(node, tmp, &client_list, client) {
         if (node->expire)
@@ -2555,6 +2574,10 @@ void flush_expire_client_node(void)
             list_for_each_entry_safe(stat_node, tmp_stat_node, &node->stat_list, list) {
                 list_del(&stat_node->list);
                 free(stat_node);
+            }
+            list_for_each_entry_safe(record, tmp_record, &node->online_offline_records, record) {
+                list_del(&record->record);
+                free(record);
             }
             list_del(&node->client);
             free(node);
@@ -3556,11 +3579,7 @@ void check_and_archive_all_clients(void) {
     }
     
     
-    global_app_type_record_t *record = NULL, *tmp_record = NULL;
-    list_for_each_entry_safe(record, tmp_record, &global_hourly_records, list) {
-        list_del(&record->list);
-        free(record);
-    }
+    memset(g_hourly_app_type_buckets, 0, sizeof(g_hourly_app_type_buckets));
     LOG_DEBUG("Reset global hourly type stats for new day\n");
     
     LOG_DEBUG("Archive completed: processed %d clients for date %s\n", client_count, yesterday_str);
@@ -4433,59 +4452,43 @@ void delete_client_record_files(const char *mac, const char *start_date, const c
 void update_global_app_type_stats(int appid, unsigned long long time_delta) {
     if (appid <= 0 || time_delta == 0)
         return;
-    
+
     int app_type = appid / 1000;
     if (app_type <= 0 || app_type > MAX_APP_TYPE)
         return;
-    
-    int type_index = app_type - 1;  
+
     u_int32_t cur_time = get_timestamp();
-    
-    
     u_int32_t today = get_today_start_timestamp();
     if (g_daily_stat_date != today) {
         memset(g_daily_type_stats, 0, sizeof(g_daily_type_stats));
         g_daily_stat_date = today;
     }
-    
-    
-    g_daily_type_stats[type_index] += time_delta;
-    
-    
-    global_app_type_record_t *record = (global_app_type_record_t *)calloc(1, sizeof(global_app_type_record_t));
-    if (record) {
-        record->app_type = app_type;
-        record->time_delta = time_delta;
-        record->timestamp = cur_time;
-        INIT_LIST_HEAD(&record->list);
-        list_add_tail(&record->list, &global_hourly_records);
+
+    g_daily_type_stats[app_type - 1] += time_delta;
+
+    hourly_app_type_bucket_t *bucket = &g_hourly_app_type_buckets[cur_time % HOURLY_APP_SLOTS];
+    if (bucket->timestamp != cur_time) {
+        memset(bucket, 0, sizeof(*bucket));
+        bucket->timestamp = cur_time;
     }
+    bucket->type_time[app_type - 1] += time_delta;
 }
 
 
 void cleanup_expired_hourly_stats(void) {
     u_int32_t cur_time = get_timestamp();
-    u_int32_t expire_time = cur_time - 3600;  
-    
-    global_app_type_record_t *record = NULL, *tmp_record = NULL;
+    u_int32_t expire_time = cur_time > HOURLY_APP_SECONDS ? cur_time - HOURLY_APP_SECONDS : 0;
     int cleared_count = 0;
-    
-    
-    list_for_each_entry_safe(record, tmp_record, &global_hourly_records, list) {
-        if (record->timestamp < expire_time) {
-            
-            list_del(&record->list);
-            free(record);
+
+    for (int i = 0; i < HOURLY_APP_SLOTS; i++) {
+        hourly_app_type_bucket_t *bucket = &g_hourly_app_type_buckets[i];
+        if (bucket->timestamp && bucket->timestamp < expire_time) {
+            memset(bucket, 0, sizeof(*bucket));
             cleared_count++;
-        } else {
-            
-            break;
         }
     }
-    
-    if (cleared_count > 0) {
-        LOG_DEBUG("Cleared %d expired hourly records\n", cleared_count);
-    }
+    if (cleared_count > 0)
+        LOG_DEBUG("Cleared %d expired hourly buckets\n", cleared_count);
 }
 
 
@@ -4508,24 +4511,16 @@ void get_global_daily_app_type_stats(unsigned long long *type_time_array) {
 void get_global_hourly_app_type_stats(unsigned long long *type_time_array) {
     if (!type_time_array)
         return;
-    
-    
-    cleanup_expired_hourly_stats();
-    
-    
+
     memset(type_time_array, 0, sizeof(unsigned long long) * MAX_APP_TYPE);
-    
-    
+
     u_int32_t cur_time = get_timestamp();
-    u_int32_t expire_time = cur_time - 3600;  
-    
-    global_app_type_record_t *record = NULL;
-    list_for_each_entry(record, &global_hourly_records, list) {
-        if (record->timestamp >= expire_time) {
-            int type_index = record->app_type - 1;
-            if (type_index >= 0 && type_index < MAX_APP_TYPE) {
-                type_time_array[type_index] += record->time_delta;
-            }
-        }
+    u_int32_t expire_time = cur_time > HOURLY_APP_SECONDS ? cur_time - HOURLY_APP_SECONDS : 0;
+    for (int i = 0; i < HOURLY_APP_SLOTS; i++) {
+        hourly_app_type_bucket_t *bucket = &g_hourly_app_type_buckets[i];
+        if (bucket->timestamp < expire_time || bucket->timestamp > cur_time)
+            continue;
+        for (int j = 0; j < MAX_APP_TYPE; j++)
+            type_time_array[j] += bucket->type_time[j];
     }
 }

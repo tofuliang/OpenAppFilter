@@ -94,11 +94,11 @@ int fwx_del_mac_filter_rule(int rule_id) {
 	mac_filter_write_lock();
 	rule = fwx_find_mac_filter_rule(rule_id);
 	if (rule) {
-		fwx_flush_mac_list(&rule->mac_list);
 		list_del(&rule->list);
-		kfree(rule);
 		g_mac_rule_count--;
 		mac_filter_write_unlock();
+		fwx_flush_mac_list(&rule->mac_list);
+		kfree(rule);
 		return 0;
 	}
 	mac_filter_write_unlock();
@@ -141,25 +141,29 @@ int fwx_del_mac_from_rule(int rule_id, const unsigned char *mac) {
 	return -1;
 }
 
-mac_filter_rule_t *fwx_match_mac_filter_rule(const unsigned char *mac) {
+int fwx_match_mac_filter_rule(const unsigned char *mac, int *rule_id) {
 	mac_filter_rule_t *rule;
 	struct mac_node *node;
 
 	mac_filter_read_lock();
 	list_for_each_entry(rule, &mac_filter_rule_list, list) {
 		if (rule->mode == MAC_FILTER_MODE_ALL_USERS) {
+			if (rule_id)
+				*rule_id = rule->rule_id;
 			mac_filter_read_unlock();
-			return rule;
+			return 1;
 		}
 
 		node = fwx_find_mac_node(&rule->mac_list, mac);
 		if (node) {
+			if (rule_id)
+				*rule_id = rule->rule_id;
 			mac_filter_read_unlock();
-			return rule;
+			return 1;
 		}
 	}
 	mac_filter_read_unlock();
-	return NULL;
+	return 0;
 }
 
 int fwx_api_add_mac_filter_rule(cJSON *data_obj) {
@@ -192,7 +196,6 @@ int fwx_api_add_mac_filter_rule(cJSON *data_obj) {
 }
 
 int fwx_api_mod_mac_filter_rule(cJSON *data_obj) {
-	int i;
 	cJSON *rule_id_obj;
 	cJSON *mac_array;
 	cJSON *mac_obj;
@@ -240,8 +243,7 @@ int fwx_api_mod_mac_filter_rule(cJSON *data_obj) {
 				if (action_obj->valueint == 1){ // flush old
 					fwx_flush_mac_list(&rule->mac_list);
 				}
-				for (i = 0; i < cJSON_GetArraySize(mac_array); i++) {
-					mac_obj = cJSON_GetArrayItem(mac_array, i);
+				for (mac_obj = mac_array->child; mac_obj; mac_obj = mac_obj->next) {
 					u8 mac_bin[ETH_ALEN] = {0};
 					if (mac_str_to_bin(mac_obj->valuestring, mac_bin)) {
 						fwx_add_mac_node(&rule->mac_list, mac_bin);
@@ -448,15 +450,18 @@ int fwx_api_dump_mac_filter_rule(cJSON *data_obj) {
 
 int fwx_api_flush_mac_filter_rule(cJSON *data_obj) {
 	mac_filter_rule_t *rule, *next;
-	
+	LIST_HEAD(old_rules);
+
 	mac_filter_write_lock();
-	list_for_each_entry_safe(rule, next, &mac_filter_rule_list, list) {
+	list_splice_init(&mac_filter_rule_list, &old_rules);
+	g_mac_rule_count = 0;
+	mac_filter_write_unlock();
+
+	list_for_each_entry_safe(rule, next, &old_rules, list) {
 		fwx_flush_mac_list(&rule->mac_list);
 		list_del(&rule->list);
 		kfree(rule);
 	}
-	g_mac_rule_count = 0;
-	mac_filter_write_unlock();
 	
 	return 0;
 }
@@ -477,7 +482,7 @@ int fwx_match_mac_filter_whitelist(const unsigned char *mac) {
 
 int fwx_api_add_mac_filter_whitelist(cJSON *data_obj) {
 	cJSON *mac_array;
-	int i;
+	cJSON *mac_obj;
 	u8 mac_bin[ETH_ALEN];
 
 	if (!data_obj) {
@@ -491,8 +496,7 @@ int fwx_api_add_mac_filter_whitelist(cJSON *data_obj) {
 	}
 
 	mac_filter_write_lock();
-	for (i = 0; i < cJSON_GetArraySize(mac_array); i++) {
-		cJSON *mac_obj = cJSON_GetArrayItem(mac_array, i);
+	for (mac_obj = mac_array->child; mac_obj; mac_obj = mac_obj->next) {
 		if (mac_obj && mac_str_to_bin(mac_obj->valuestring, mac_bin)) {
 			fwx_add_mac_node(&g_mac_filter_whitelist, mac_bin);
 		}

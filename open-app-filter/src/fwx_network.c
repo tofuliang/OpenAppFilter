@@ -25,6 +25,7 @@
 #include "fwx_uci.h"
 #define MAX_INET_ADDR_LEN 32
 #define MAX_MAC_ADDR_LEN 18
+#define IFACE_STATUS_BUF_MAX (1024U * 1024U)
 
 int get_iface_status(char *ifname, iface_status_t *status){
     int ret = -1; 
@@ -123,8 +124,16 @@ char *get_interface_status_buf(char *ifname) {
     while (fgets(line, sizeof(line), fp)) {
         size_t line_len = strlen(line);
         if (total_read + line_len >= buf_size) {
+            char *new_buf;
+            if (buf_size >= IFACE_STATUS_BUF_MAX) {
+                LOG_ERROR("get_interface_status_buf: output exceeds %u bytes\n",
+                          (unsigned)IFACE_STATUS_BUF_MAX);
+                free(buf);
+                pclose(fp);
+                return NULL;
+            }
             buf_size *= 2;
-            char *new_buf = realloc(buf, buf_size);
+            new_buf = realloc(buf, buf_size);
             if (!new_buf) {
                 free(buf);
                 pclose(fp);

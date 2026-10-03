@@ -124,8 +124,11 @@ int fwx_check_time(fwx_time_config_t *t_config, fwx_run_time_status_t *status) {
 
 struct json_object * fwx_gen_api_response_data(int code, struct json_object *data_obj){
     struct json_object *root_obj = json_object_new_object();
-    if (!root_obj)
+    if (!root_obj) {
+        if (data_obj)
+            json_object_put(data_obj);
         return NULL;
+    }
     json_object_object_add(root_obj, "code", json_object_new_int(code));
     if (data_obj)
         json_object_object_add(root_obj, "data", data_obj);

@@ -58,9 +58,13 @@ static void flush_app_id_list(app_id_config_t *config) {
 
 
 static app_id_node_t *find_app_id_node(app_id_config_t *config, int app_id) {
-    int hash = app_id % APPID_HASH_SIZE;
+    int hash;
     app_id_node_t *node;
-    
+
+    if (app_id <= 0)
+        return NULL;
+    hash = app_id % APPID_HASH_SIZE;
+
     hlist_for_each_entry(node, &config->hash_table[hash], hlist) {
         if (node->app_id == app_id) {
             return node;
@@ -73,6 +77,9 @@ static app_id_node_t *find_app_id_node(app_id_config_t *config, int app_id) {
 static int add_app_id_node(app_id_config_t *config, int app_id) {
     app_id_node_t *node;
     int hash;
+    if (app_id <= 0)
+        return -1;
+
     
 
     if (find_app_id_node(config, app_id)) {
@@ -127,11 +134,12 @@ static int add_app_id_token_to_rule(app_filter_rule_t *rule, cJSON *app_id_obj)
             AF_ERROR("invalid app_id range: %s\n", token);
             return -1;
         }
-        for (i = start_id; i <= end_id; i++) {
-			AF_INFO("token parse %s, id = %d\n", token, i);
-            if (add_app_id_node(&rule->app_id_list, i) < 0) {
+        for (i = start_id; ; i++) {
+            AF_INFO("token parse %s, id = %d\n", token, i);
+            if (add_app_id_node(&rule->app_id_list, i) < 0)
                 return -1;
-            }
+            if (i == end_id)
+                break;
         }
         return 0;
     }
@@ -148,7 +156,10 @@ static int del_app_id_token_from_rule(int rule_id, cJSON *app_id_obj)
 {
     int start_id = 0, end_id = 0;
     int single_id = 0;
-    int i = 0;
+    int i;
+    app_filter_rule_t *rule;
+    app_id_node_t *node;
+    struct hlist_node *next;
     const char *token = NULL;
 
     if (!app_id_obj) {
@@ -169,9 +180,20 @@ static int del_app_id_token_from_rule(int rule_id, cJSON *app_id_obj)
             AF_ERROR("invalid app_id range for delete: %s\n", token);
             return -1;
         }
-        for (i = start_id; i <= end_id; i++) {
-            fwx_del_app_id_from_rule(rule_id, i);
+        app_filter_write_lock();
+        rule = fwx_find_app_filter_rule(rule_id);
+        if (rule) {
+            for (i = 0; i < APPID_HASH_SIZE; i++) {
+                hlist_for_each_entry_safe(node, next, &rule->app_id_list.hash_table[i], hlist) {
+                    if (node->app_id >= start_id && node->app_id <= end_id) {
+                        hlist_del(&node->hlist);
+                        kfree(node);
+                        rule->app_id_list.count--;
+                    }
+                }
+            }
         }
+        app_filter_write_unlock();
         return 0;
     }
 
@@ -266,12 +288,12 @@ int fwx_del_app_filter_rule(int rule_id) {
     app_filter_write_lock();
     rule = fwx_find_app_filter_rule(rule_id);
     if (rule) {
-        flush_app_id_list(&rule->app_id_list);
-        fwx_flush_mac_list(&rule->mac_list);
         list_del(&rule->list);
-        kfree(rule);
         g_app_rule_count--;
         app_filter_write_unlock();
+        flush_app_id_list(&rule->app_id_list);
+        fwx_flush_mac_list(&rule->mac_list);
+        kfree(rule);
         AF_INFO("del app filter rule %d ok\n", rule_id);
         return 0;
     }
@@ -283,16 +305,17 @@ int fwx_del_app_filter_rule(int rule_id) {
 
 int fwx_add_app_id_to_rule(int rule_id, int app_id) {
     app_filter_rule_t *rule;
-    
+    int ret;
+
     app_filter_write_lock();
     rule = fwx_find_app_filter_rule(rule_id);
     if (rule) {
-        add_app_id_node(&rule->app_id_list, app_id);
+        ret = add_app_id_node(&rule->app_id_list, app_id);
         app_filter_write_unlock();
-        return 0;
+        return ret;
     }
     app_filter_write_unlock();
-    
+
     AF_ERROR("app filter rule %d not found\n", rule_id);
     return -1;
 }
@@ -301,6 +324,9 @@ int fwx_del_app_id_from_rule(int rule_id, int app_id) {
     app_filter_rule_t *rule;
     app_id_node_t *node;
     int hash;
+    if (app_id <= 0)
+        return -1;
+
     
     app_filter_write_lock();
     rule = fwx_find_app_filter_rule(rule_id);
@@ -323,12 +349,15 @@ int fwx_del_app_id_from_rule(int rule_id, int app_id) {
 }
 
 
-app_filter_rule_t *fwx_match_app_filter_rule(int app_id, const unsigned char *mac) {
+int fwx_match_app_filter_rule(int app_id, const unsigned char *mac, int *rule_id) {
     app_filter_rule_t *rule;
     app_id_node_t *node;
     struct mac_node *mac_node;
     int i;
     int mac_list_empty;
+    if (app_id <= 0)
+        return 0;
+
     
     app_filter_read_lock();
     list_for_each_entry(rule, &app_filter_rule_list, list) {
@@ -358,20 +387,24 @@ app_filter_rule_t *fwx_match_app_filter_rule(int app_id, const unsigned char *ma
 
         if (app_id == FWX_QUIC_PROTO) {
             if (rule->filter_quic == 1) {
+                if (rule_id)
+                    *rule_id = rule->rule_id;
                 app_filter_read_unlock();
-                return rule;
+                return 1;
             }
             continue;
         }
 
         node = find_app_id_node(&rule->app_id_list, app_id);
         if (node) {
+            if (rule_id)
+                *rule_id = rule->rule_id;
             app_filter_read_unlock();
-            return rule;
+            return 1;
         }
     }
     app_filter_read_unlock();
-    return NULL;
+    return 0;
 }
 
 int fwx_api_add_app_filter_rule(cJSON *data_obj) {
@@ -399,7 +432,6 @@ int fwx_api_add_app_filter_rule(cJSON *data_obj) {
 }
 
 int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
-    int i;
     cJSON *rule_id_obj;
     cJSON *app_id_array;
     cJSON *app_id_obj;
@@ -432,13 +464,13 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
     if (mac_action_obj) {
         if (mac_action_obj->valueint == 1 || mac_action_obj->valueint == 2) {
             cJSON *mac_array = cJSON_GetObjectItem(data_obj, "mac_list");
+            cJSON *mac_obj;
             if (mac_array) {
                 app_filter_write_lock();
                 if (mac_action_obj->valueint == 1) {  // flush old
                     fwx_flush_mac_list(&rule->mac_list);
                 }
-                for (i = 0; i < cJSON_GetArraySize(mac_array); i++) {
-                    cJSON *mac_obj = cJSON_GetArrayItem(mac_array, i);
+                for (mac_obj = mac_array->child; mac_obj; mac_obj = mac_obj->next) {
                     u8 mac_bin[ETH_ALEN] = {0};
                     if (mac_obj && mac_str_to_bin(mac_obj->valuestring, mac_bin)) {
                         fwx_add_mac_node(&rule->mac_list, mac_bin);
@@ -474,8 +506,7 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
                 if (action_obj->valueint == 1) {  // flush old
                     flush_app_id_list(&rule->app_id_list);
                 }
-                for (i = 0; i < cJSON_GetArraySize(app_id_array); i++) {
-                    app_id_obj = cJSON_GetArrayItem(app_id_array, i);
+                for (app_id_obj = app_id_array->child; app_id_obj; app_id_obj = app_id_obj->next) {
                     if (app_id_obj) {
                         add_app_id_token_to_rule(rule, app_id_obj);
                     }
@@ -751,15 +782,19 @@ int fwx_api_dump_app_filter_rule(cJSON *data_obj) {
 
 int fwx_api_flush_app_filter_rule(cJSON *data_obj) {
     app_filter_rule_t *rule, *next;
-    
+    LIST_HEAD(old_rules);
+
     app_filter_write_lock();
-    list_for_each_entry_safe(rule, next, &app_filter_rule_list, list) {
+    list_splice_init(&app_filter_rule_list, &old_rules);
+    g_app_rule_count = 0;
+    app_filter_write_unlock();
+
+    list_for_each_entry_safe(rule, next, &old_rules, list) {
         flush_app_id_list(&rule->app_id_list);
+        fwx_flush_mac_list(&rule->mac_list);
         list_del(&rule->list);
         kfree(rule);
     }
-    g_app_rule_count = 0;
-    app_filter_write_unlock();
     
 	fwx_update_appfilter_jiffies();
     return 0;
@@ -781,7 +816,7 @@ int fwx_match_app_filter_whitelist(const unsigned char *mac) {
 
 int fwx_api_add_app_filter_whitelist(cJSON *data_obj) {
     cJSON *mac_array;
-    int i;
+    cJSON *mac_obj;
     u8 mac_bin[ETH_ALEN];
 
     if (!data_obj) {
@@ -795,8 +830,7 @@ int fwx_api_add_app_filter_whitelist(cJSON *data_obj) {
     }
 
     app_filter_write_lock();
-    for (i = 0; i < cJSON_GetArraySize(mac_array); i++) {
-        cJSON *mac_obj = cJSON_GetArrayItem(mac_array, i);
+    for (mac_obj = mac_array->child; mac_obj; mac_obj = mac_obj->next) {
         if (mac_obj && mac_str_to_bin(mac_obj->valuestring, mac_bin)) {
             fwx_add_mac_node(&g_app_filter_whitelist, mac_bin);
         }

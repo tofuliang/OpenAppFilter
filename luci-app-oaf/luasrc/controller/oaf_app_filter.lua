@@ -1,5 +1,6 @@
 module("luci.controller.oaf_app_filter", package.seeall)
 local utl = require "luci.util"
+local fs = require "nixio.fs"
 
 function index()
 	local fs = require "nixio.fs"
@@ -113,13 +114,25 @@ function process_uploaded_file(file_path)
     llog("File moved to: " .. permanent_path)
 end
 
+local function rotate_luci_log(log_file)
+    local file_size = fs.stat(log_file, "size")
+    if file_size and file_size > 65536 then
+        os.remove(log_file .. ".old")
+        os.rename(log_file, log_file .. ".old")
+    end
+end
+
 function llog(message)
-    local log_file = "/tmp/log/oaf_luci.log"  
-    local fd = io.open(log_file, "a")  
+    local log_file = "/tmp/log/oaf_luci.log"
+    if not fs.access("/tmp/log") then
+        fs.mkdirr("/tmp/log")
+    end
+    rotate_luci_log(log_file)
+    local fd = io.open(log_file, "a")
     if fd then
-        local timestamp = os.date("%Y-%m-%d %H:%M:%S") 
-        fd:write(string.format("[%s] %s\n", timestamp, message)) 
-        fd:close() 
+        local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+        fd:write(string.format("[%s] %s\n", timestamp, message))
+        fd:close()
     end
 end
 

@@ -28,18 +28,23 @@ void fwx_mac_config_init(mac_config_t *config){
 }
 
 void fwx_add_mac_node(mac_config_t *config, const unsigned char *mac) {
-    struct mac_node *new_node;
+    struct mac_node *node;
     int hash = mac_hash(mac);
 
-    new_node = kmalloc(sizeof(struct mac_node), GFP_KERNEL);
-    if (!new_node) {
+    hlist_for_each_entry(node, &config->hash_table[hash], hlist) {
+        if (memcmp(node->mac, mac, ETH_ALEN) == 0)
+            return;
+    }
+
+    node = kmalloc(sizeof(*node), GFP_ATOMIC);
+    if (!node) {
         pr_err("Memory allocation failed\n");
         return;
     }
-    memcpy(new_node->mac, mac, ETH_ALEN);
-    INIT_HLIST_NODE(&new_node->hlist);
+    memcpy(node->mac, mac, ETH_ALEN);
+    INIT_HLIST_NODE(&node->hlist);
 
-    hlist_add_head(&new_node->hlist, &config->hash_table[hash]);
+    hlist_add_head(&node->hlist, &config->hash_table[hash]);
 }
 
 void fwx_dump_mac_node(mac_config_t *config) {

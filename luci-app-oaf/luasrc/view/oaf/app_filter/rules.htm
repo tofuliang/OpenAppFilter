@@ -989,6 +989,7 @@ $(document).ready(function() {
     var currentEditingRuleId = null; // 当前正在编辑的规则ID
     var classListLoaded = false; // 标记分类列表是否已加载
     var rulesLoaded = false; // 标记规则列表是否已加载
+    var classListRequest = null;
     
     init();
 
@@ -1033,7 +1034,8 @@ $(document).ready(function() {
     }
 
     function loadClassList() {
-        $.get("<%=url('admin/services/oaf/api/app_filter/class_list')%>", function(data) {
+        if (classListRequest) return classListRequest;
+        classListRequest = $.get("<%=url('admin/services/oaf/api/app_filter/class_list')%>", function(data) {
             if (data && data.class_list) {
                 classList = normalizeClassList(data.class_list);
             }
@@ -1046,7 +1048,10 @@ $(document).ready(function() {
             if (rulesLoaded) {
                 renderRulesList();
             }
+        }).always(function() {
+            classListRequest = null;
         });
+        return classListRequest;
     }
 
     function loadRules() {
@@ -1570,8 +1575,9 @@ $(document).ready(function() {
         return $container;
     }
     
+    var closeTimeChart = null;
     function showTimeChart($btn) {
-        $('.time-chart-popup').remove();
+        if (closeTimeChart) closeTimeChart();
         
         var timeRules = JSON.parse($btn.data('time-rules'));
         if (!timeRules || timeRules.length === 0) {
@@ -1640,32 +1646,35 @@ $(document).ready(function() {
         
         $('body').append($popup);
         
+        var closeTimer = null;
         var clickHandler = function(e) {
             if (!$(e.target).closest('.time-chart-popup, .more-time-btn').length) {
-                $('.time-chart-popup').remove();
-                $(document).off('click.timechart', clickHandler);
+                closeTimeChart();
             }
+        };
+        closeTimeChart = function() {
+            if (closeTimer) clearTimeout(closeTimer);
+            $btn.off('.timechart');
+            $(document).off('click.timechart', clickHandler);
+            $popup.remove();
+            closeTimeChart = null;
         };
         $(document).on('click.timechart', clickHandler);
-        
-        var closeTimer;
+
         var mouseLeaveHandler = function() {
-            closeTimer = setTimeout(function() {
-                $('.time-chart-popup').remove();
-                $(document).off('click.timechart', clickHandler);
-            }, 300);
+            if (closeTimer) clearTimeout(closeTimer);
+            closeTimer = setTimeout(function() { closeTimeChart(); }, 300);
         };
-        
+
         var mouseEnterHandler = function() {
-            if (closeTimer) {
-                clearTimeout(closeTimer);
-            }
+            if (closeTimer) clearTimeout(closeTimer);
+            closeTimer = null;
         };
-        
-        $btn.on('mouseleave', mouseLeaveHandler);
-        $popup.on('mouseleave', mouseLeaveHandler);
-        $btn.on('mouseenter', mouseEnterHandler);
-        $popup.on('mouseenter', mouseEnterHandler);
+
+        $btn.on('mouseleave.timechart', mouseLeaveHandler);
+        $popup.on('mouseleave.timechart', mouseLeaveHandler);
+        $btn.on('mouseenter.timechart', mouseEnterHandler);
+        $popup.on('mouseenter.timechart', mouseEnterHandler);
     }
     
     function editRule(ruleId) {
@@ -1887,16 +1896,18 @@ $(document).ready(function() {
         $container.empty();
         
         if (classList.length === 0) {
-            $container.html('<div>' + _LoadingAppList + '</div>');
-            loadClassList();
+            $container.text(_LoadingAppList);
             var modalGenerationAtRender = modalGeneration;
-            var timerId = setTimeout(function() {
+            loadClassList().always(function() {
                 if (modalGenerationAtRender !== modalGeneration || !$('#add-rule-modal').hasClass('show')) {
                     return;
                 }
-                renderAppSelection(selectedAppIds);
-            }, 500);
-            modalTimerIds.push(timerId);
+                if (classList.length > 0) {
+                    renderAppSelection(selectedAppIds);
+                } else {
+                    $container.text('<%:No Data%>');
+                }
+            });
             return;
         }
         
@@ -2346,19 +2357,7 @@ $(document).ready(function() {
         
             resetRuleForm();
         
-        if (classList.length === 0) {
-            loadClassList();
-            var modalGenerationAtOpen = modalGeneration;
-            var timerId = setTimeout(function() {
-                if (modalGenerationAtOpen !== modalGeneration || !$('#add-rule-modal').hasClass('show')) {
-                    return;
-                }
-                renderAppSelection([]);
-            }, 500);
-            modalTimerIds.push(timerId);
-        } else {
-            renderAppSelection([]);
-        }
+        renderAppSelection([]);
     }
     
     function closeAddRuleModal() {

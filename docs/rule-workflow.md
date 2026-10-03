@@ -210,6 +210,8 @@ rtk ssh root@192.168.2.1 "cd /www/luci-static/resources/oaf/app_icons && tar xzf
 
 **正则检测规则**（`af_is_regex_host_pattern`）：host 必须同时以 `^` 开头、含 `*`、含 `$` 才走正则通道；K&R 迷你正则无分组无 alternation。apex 精确式 = `^esc(h)[*]*$`（长度超限退 `^esc[:-1]最后字符*$`，再退 `^首段\..*$`）。
 
+**内核版本要求**：`[*]` 字符类在正则匹配时会分配临时缓冲；部署此类规则前必须使用包含 `oaf/src/regexp.c` 字符类释放修复的内核模块。仅热加载 `feature.bin` 不会更新已加载的 `oaf.ko`；旧模块会随匹配次数持续占用不可回收内核内存，`appfilter.global.enable=0` 也不会停止内核匹配。升级后监控 `/proc/meminfo` 的 `SUnreclaim` 与 `MemAvailable`。
+
 **硬约束速查**：
 
 | 约束 | 值 | 违反后果 |
