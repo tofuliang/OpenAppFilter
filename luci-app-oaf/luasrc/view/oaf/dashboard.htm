@@ -19,13 +19,13 @@
     }
 
     [data-darkmode="true"] {
-        --chart-text-color: var(--text-color-high, #e5e7eb);
-        --chart-axis-line-color: var(--border-color-medium, #64748b);
+        --chart-text-color: var(--text-color-high, #e5edf7);
+        --chart-axis-line-color: var(--border-color-medium, rgba(203, 213, 225, 0.35));
         --chart-axis-label-color: var(--text-color-medium, #cbd5e1);
-        --chart-split-line-color: var(--border-color-low, #334155);
-        --chart-split-line-dashed-color: var(--border-color-medium, #64748b);
-        --chart-tooltip-bg: var(--background-color-high, #1f2937);
-        --chart-tooltip-text: var(--text-color-high, #f8fafc);
+        --chart-split-line-color: var(--border-color-low, rgba(203, 213, 225, 0.12));
+        --chart-split-line-dashed-color: var(--border-color-medium, rgba(203, 213, 225, 0.2));
+        --chart-tooltip-bg: var(--background-color-high, rgba(20, 29, 41, 0.96));
+        --chart-tooltip-text: var(--text-color-high, #e5edf7);
         --temp-space-bar-gradient: linear-gradient(90deg,#a1ecff,#abd5ff);
         --storage-bar-gradient: linear-gradient(90deg,#9deaff,#a6ceff);
         --storage-bar-shadow: 0 0 14px rgba(151, 217, 255, 0.58);
@@ -925,13 +925,17 @@
     .spark { height: 70px; }
     .app-grid {
         display: grid;
-        grid-template-columns: repeat(10, 1fr);
+        grid-template-columns: repeat(auto-fit, minmax(min(64px, 100%), 1fr));
         gap: 12px;
         padding: 4px 0;
         min-height: 60px;
     }
+    .app-grid > .no-data {
+        grid-column: 1 / -1;
+    }
     .app-item {
         display: flex;
+        min-width: 0;
         flex-direction: column;
         align-items: center;
         justify-content: center;
@@ -1240,6 +1244,35 @@
             grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
         }
 
+        #active-app-card {
+            position: relative;
+        }
+        #active-app-card .app-item {
+            position: static;
+        }
+        #active-app-card .tooltip {
+            left: 0;
+            right: 0;
+            top: 100%;
+            bottom: auto;
+            width: auto;
+            min-width: 0;
+            max-width: 100%;
+            box-sizing: border-box;
+            transform: none;
+            overflow-wrap: anywhere;
+        }
+        #active-app-card .tooltip::before,
+        #active-app-card .tooltip::after {
+            display: none;
+        }
+        #active-app-card .tooltip-value {
+            min-width: 0;
+        }
+        .card-title-row {
+            flex-wrap: wrap;
+            gap: 8px;
+        }
         .dash {
             grid-template-columns: 1fr;  
             gap: 12px;

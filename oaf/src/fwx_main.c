@@ -121,7 +121,7 @@ static inline int fwx_ct_has_valid_drop_mark(const struct nf_conn *ct)
 	       (app_id == 0 || fwx_ct_is_valid_appid(app_id));
 }
 #define MAX_OAF_NETLINK_MSG_LEN 1024
-#define MAX_AF_SUPPORT_DATA_LEN 3000
+#define MAX_AF_SUPPORT_DATA_LEN 4096
 #define AF_AC_CHARSET_SIZE 256
 
 
@@ -1274,36 +1274,24 @@ void af_feature_load_done_msg_handle(void)
 	}
 }
 
-static unsigned char *read_skb(struct sk_buff *skb, unsigned int from, unsigned int len)
+static unsigned char *read_skb(struct sk_buff *skb, int from, int len)
 {
-	struct skb_seq_state state;
 	unsigned char *msg_buf = NULL;
-	unsigned int consumed = 0;
 
-	if (len == 0 || len > MAX_AF_SUPPORT_DATA_LEN)
+	/* Validate the range without overflowing from + len. */
+	if (!skb || from < 0 || len <= 0 || len > MAX_AF_SUPPORT_DATA_LEN ||
+	    from > skb->len || len > skb->len - from)
 		return NULL;
 
+	/* Netfilter receive hooks run in softirq context. */
 	msg_buf = kmalloc(len, GFP_ATOMIC);
 	if (!msg_buf)
 		return NULL;
 
-	skb_prepare_seq_read(skb, from, from + len, &state);
-	while (1)
-	{
-		unsigned int avail;
-		const u8 *ptr;
-		avail = skb_seq_read(consumed, &ptr, &state);
-		if (avail == 0)
-		{
-			break;
-		}
-		memcpy(msg_buf + consumed, ptr, avail);
-		consumed += avail;
-		if (consumed >= len)
-		{
-			skb_abort_seq_read(&state);
-			break;
-		}
+	/* Copy exactly len bytes, including non-linear skb fragments. */
+	if (skb_copy_bits(skb, from, msg_buf, len)) {
+		kfree(msg_buf);
+		return NULL;
 	}
 	return msg_buf;
 }
@@ -1460,12 +1448,12 @@ void dpi_http_proto(flow_info_t *flow)
 
 	data = flow->l4_data;
 	data_len = flow->l4_len;
-	if (data_len < MIN_HTTP_DATA_LEN)
+	if (!data || data_len < MIN_HTTP_DATA_LEN)
 	{
 		return;
 	}
 
-	for (i = 0; i + 1 < data_len; i++)
+	for (i = 0; i < data_len - 1; i++)
 	{
 		if (data[i] == 0x0d && data[i + 1] == 0x0a)
 		{
@@ -1490,7 +1478,8 @@ void dpi_http_proto(flow_info_t *flow)
 				flow->http.host_pos = data + start + 6;
 				flow->http.host_len = i - start - 6;
 			}
-			if (i + 3 < data_len && data[i + 2] == 0x0d && data[i + 3] == 0x0a)
+			if (data_len - i >= 4 &&
+			    data[i + 2] == 0x0d && data[i + 3] == 0x0a)
 			{
 				flow->http.data_pos = data + i + 4;
 				flow->http.data_len = data_len - i - 4;
@@ -2329,8 +2318,10 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 				return NF_ACCEPT;
 			}
 		}
-		if (skb_is_nonlinear(skb) && flow.l4_len > 0 && flow.l4_len < MAX_AF_SUPPORT_DATA_LEN)
+		if (skb_is_nonlinear(skb))
 		{
+			/* Limit both the copy and subsequent DPI reads to this prefix. */
+			flow.l4_len = min(flow.l4_len, MAX_AF_SUPPORT_DATA_LEN);
 			flow.l4_data = read_skb(skb, flow.l4_data - skb->data, flow.l4_len);
 			if (!flow.l4_data)
 				return NF_ACCEPT;
@@ -2525,8 +2516,10 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	if (total_packets > MAX_DPI_PKT_NUM)
 		return NF_ACCEPT;
 
-	if (skb_is_nonlinear(skb) && flow.l4_len > 0 && flow.l4_len < MAX_AF_SUPPORT_DATA_LEN)
+	if (skb_is_nonlinear(skb))
 	{
+		/* Limit both the copy and subsequent DPI reads to this prefix. */
+		flow.l4_len = min(flow.l4_len, MAX_AF_SUPPORT_DATA_LEN);
 		flow.l4_data = read_skb(skb, flow.l4_data - skb->data, flow.l4_len);
 		if (!flow.l4_data)
 			return NF_ACCEPT;
