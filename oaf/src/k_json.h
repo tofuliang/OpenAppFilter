@@ -41,8 +41,9 @@ typedef struct cJSON {
 	int type;					// The type of the item, as above.
 
 	char *valuestring;			// The item's string, if type==cJSON_String
-	int valueint;				// The item's number, if type==cJSON_Number
-	char *string;				// The item's name string, if this item is the child of, or is in the list of subitems of an object.
+	int valueint;					// The item's number, if type==cJSON_Number
+	long long valueint64;				// 64-bit integer used by number output
+	char *string;					// The item's name string, if this item is the child of, or is in the list of subitems
 } cJSON;
 
 typedef struct cJSON_Hooks {
@@ -74,6 +75,7 @@ extern cJSON *cJSON_CreateNull(void);
 extern cJSON *cJSON_CreateTrue(void);
 extern cJSON *cJSON_CreateFalse(void);
 extern cJSON *cJSON_CreateNumber(int num);
+extern cJSON *cJSON_CreateNumber64(long long num);
 extern cJSON *cJSON_CreateString(const char *string);
 extern cJSON *cJSON_CreateArray(void);
 extern cJSON *cJSON_CreateObject(void);
@@ -82,13 +84,14 @@ extern void cJSON_Minify(char *json);
 extern cJSON *cJSON_CreateIntArray(int *numbers,int count);
 
 
-extern void   cJSON_AddItemToArray(cJSON *array, cJSON *item);
-extern void	  cJSON_AddItemToObject(cJSON *object,const char *string,cJSON *item);
+extern int    cJSON_AddItemToArray(cJSON *array, cJSON *item);
+extern int    cJSON_AddItemToObject(cJSON *object,const char *string,cJSON *item);
 
 #define cJSON_AddNullToObject(object,name)	cJSON_AddItemToObject(object, name, cJSON_CreateNull())
 #define cJSON_AddTrueToObject(object,name)	cJSON_AddItemToObject(object, name, cJSON_CreateTrue())
 #define cJSON_AddFalseToObject(object,name)		cJSON_AddItemToObject(object, name, cJSON_CreateFalse())
 #define cJSON_AddNumberToObject(object,name,n)	cJSON_AddItemToObject(object, name, cJSON_CreateNumber(n))
+#define cJSON_AddNumber64ToObject(object,name,n)	cJSON_AddItemToObject(object, name, cJSON_CreateNumber64(n))
 #define cJSON_AddStringToObject(object,name,s)	cJSON_AddItemToObject(object, name, cJSON_CreateString(s))
 
 #endif

@@ -301,6 +301,7 @@ appfilter_handle_dev_visit_list(struct ubus_context *ctx, struct ubus_object *ob
         json_object_object_add(visit_obj, "ft", json_object_new_int(p_info->first_time));
         json_object_object_add(visit_obj, "lt", json_object_new_int(p_info->latest_time));
         json_object_object_add(visit_obj, "tt", json_object_new_int(total_time));
+        add_visit_json_traffic(visit_obj, p_info);
         json_object_array_add(online_array, visit_obj);
         online_num++;
     }
@@ -316,6 +317,7 @@ appfilter_handle_dev_visit_list(struct ubus_context *ctx, struct ubus_object *ob
         json_object_object_add(visit_obj, "ft", json_object_new_int(p_info->first_time));
         json_object_object_add(visit_obj, "lt", json_object_new_int(p_info->latest_time));
         json_object_object_add(visit_obj, "tt", json_object_new_int(total_time));
+        add_visit_json_traffic(visit_obj, p_info);
         json_object_array_add(offline_array, visit_obj);
         offline_num++;
     }
@@ -3128,6 +3130,7 @@ static struct json_object *build_dev_visit_item(const visit_info_t *visit, int o
     json_object_object_add(item, "ft", json_object_new_int(visit->first_time));
     json_object_object_add(item, "lt", json_object_new_int(visit->latest_time));
     json_object_object_add(item, "tt", json_object_new_int(total_time));
+    add_visit_json_traffic(item, visit);
     return item;
 }
 
@@ -3316,6 +3319,7 @@ struct json_object *fwx_api_get_active_app_records(struct json_object *req_obj) 
             json_object_object_add(item_obj, "first_time", json_object_new_int(visit->first_time));
             json_object_object_add(item_obj, "latest_time", json_object_new_int(visit->latest_time));
             json_object_object_add(item_obj, "total_time", json_object_new_int(total_time));
+            add_visit_json_traffic(item_obj, visit);
             json_object_array_add(list_obj, item_obj);
         }
     }
@@ -3463,7 +3467,7 @@ struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
 
     if (total_num > 0 && start_idx < end_idx) {
         snprintf(query_sql, sizeof(query_sql),
-                 "SELECT mac, appid, action, start_time, end_time, duration, record_id "
+                 "SELECT mac, appid, action, start_time, end_time, duration, record_id, up_bytes, down_bytes "
                  "FROM app_visit_record%s "
                  "ORDER BY end_time DESC, duration ASC, record_id ASC "
                  "LIMIT ? OFFSET ?;",
@@ -3519,6 +3523,7 @@ struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
             json_object_object_add(item_obj, "first_time", json_object_new_int(row_start));
             json_object_object_add(item_obj, "latest_time", json_object_new_int(row_end));
             json_object_object_add(item_obj, "total_time", json_object_new_int(row_duration));
+            add_visit_json_traffic_row(item_obj, stmt, 7, 8);
             json_object_array_add(list_obj, item_obj);
         }
         if (rc != SQLITE_DONE) {
@@ -4321,7 +4326,7 @@ struct json_object *fwx_api_visit_list(struct json_object *req_obj) {
 
         list_for_each_entry(p_info, &node->online_visit, visit) {
             int total_time = p_info->latest_time - p_info->first_time;
-            
+
             struct json_object *visit_obj = json_object_new_object();
             json_object_object_add(visit_obj, "appname", json_object_new_string(get_app_name_by_id(p_info->appid)));
             json_object_object_add(visit_obj, "appid", json_object_new_int(p_info->appid));
@@ -4331,12 +4336,13 @@ struct json_object *fwx_api_visit_list(struct json_object *req_obj) {
             json_object_object_add(visit_obj, "first_time", json_object_new_int(p_info->first_time));
             json_object_object_add(visit_obj, "latest_time", json_object_new_int(p_info->latest_time));
             json_object_object_add(visit_obj, "total_time", json_object_new_int(total_time));
+            add_visit_json_traffic(visit_obj, p_info);
             json_object_array_add(online_array, visit_obj);
         }
 
         list_for_each_entry(p_info, &node->visit, visit) {
             int total_time = p_info->latest_time - p_info->first_time;
-            
+
             struct json_object *visit_obj = json_object_new_object();
             json_object_object_add(visit_obj, "appname", json_object_new_string(get_app_name_by_id(p_info->appid)));
             json_object_object_add(visit_obj, "appid", json_object_new_int(p_info->appid));
@@ -4346,8 +4352,9 @@ struct json_object *fwx_api_visit_list(struct json_object *req_obj) {
             json_object_object_add(visit_obj, "first_time", json_object_new_int(p_info->first_time));
             json_object_object_add(visit_obj, "latest_time", json_object_new_int(p_info->latest_time));
             json_object_object_add(visit_obj, "total_time", json_object_new_int(total_time));
+            add_visit_json_traffic(visit_obj, p_info);
             json_object_array_add(offline_array, visit_obj);
-            
+
         }
 
         json_object_array_sort(online_array, compare_lt);

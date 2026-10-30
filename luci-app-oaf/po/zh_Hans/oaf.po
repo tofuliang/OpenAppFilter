@@ -1366,6 +1366,12 @@ msgstr "今日状态"
 msgid "Traffic"
 msgstr "流量"
 
+msgid "Only observed forwarded traffic after app identification is counted. Unavailable data is shown as —; bypass downstream traffic may be unavailable."
+msgstr "仅统计应用识别后可观测的转发流量。无数据时显示 —；旁路模式下行流量可能无法统计。"
+
+msgid "Total Traffic"
+msgstr "总流量"
+
 msgid "Type"
 msgstr "类型"
 

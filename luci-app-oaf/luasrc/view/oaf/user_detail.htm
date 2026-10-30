@@ -725,7 +725,7 @@
 				emptyTr.className = 'tr';
 				var emptyTd = emptyTr.insertCell(-1);
 				emptyTd.className = 'td';
-				emptyTd.colSpan = 6;
+				emptyTd.colSpan = 9;
 				emptyTd.style.textAlign = 'center';
 				emptyTd.innerHTML = '<%:No records%>';
 				return;
@@ -786,6 +786,15 @@
 				}
 
 				tr.insertCell(-1).innerHTML = total_time_str;
+				var up_traffic_td = tr.insertCell(-1);
+				var down_traffic_td = tr.insertCell(-1);
+				var total_traffic_td = tr.insertCell(-1);
+				up_traffic_td.className = 'td visit-traffic-cell';
+				down_traffic_td.className = 'td visit-traffic-cell';
+				total_traffic_td.className = 'td visit-traffic-cell';
+				up_traffic_td.textContent = format_record_traffic(visit_list[i].up_bytes);
+				down_traffic_td.textContent = format_record_traffic(visit_list[i].down_bytes);
+				total_traffic_td.textContent = format_total_traffic(visit_list[i].up_bytes, visit_list[i].down_bytes);
 				var online_status = visit_list[i].online == 1
                     ? '<span class="detail-status-positive"><%:Online%></span>'
                     : '<span class="detail-status-negative"><%:Offline%></span>';
@@ -793,7 +802,9 @@
 				tr.insertCell(-1).innerHTML = action_status;
 				var childs = tr.childNodes;
 				Array.prototype.forEach.call(childs, function (child) {
-					child.className = 'td';
+					child.className = child.classList && child.classList.contains('visit-traffic-cell')
+						? 'td visit-traffic-cell'
+						: 'td';
 				});
 			}
 		}
@@ -1227,6 +1238,20 @@
 		} else {
 			return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 		}
+	}
+
+	function traffic_value_known(value) {
+		return value !== null && value !== undefined && value !== ''
+			&& isFinite(Number(value)) && Number(value) >= 0;
+	}
+
+	function format_record_traffic(value) {
+		return traffic_value_known(value) ? formatTraffic(Number(value)) : '—';
+	}
+
+	function format_total_traffic(up_bytes, down_bytes) {
+		return traffic_value_known(up_bytes) && traffic_value_known(down_bytes)
+			? formatTraffic(Number(up_bytes) + Number(down_bytes)) : '—';
 	}
 
 	function formatWirelessRate(rate) {
@@ -1738,38 +1763,39 @@
 				</div>
 			</div>
 
-			<div id="tab-visit-records" class="tab-body">
-				<div style="max-height: 1000px; overflow-y: auto;padding-right: 20px;">
-					<table class="table cbi-section-table" id="visit_list_table">
-						<tr class="tr table-titles">
-							<th class="th">
-								<%:App Name%>
-							</th>
-							<th class="th">
-								<%:First Visit%>
-							</th>
-							<th class="th">
-								<%:Last Visit%>
-							</th>
-							<th class="th">
-								<%:Duration%>
-							</th>
-							<th class="th">
-								<%:Online Status%>
-							</th>
-							<th class="th">
-								<%:Filter Status%>
-							</th>
-						</tr>
-						<tr class="tr">
-							<td class="td" colspan="6"><em><br />
-									<%:Collecting data...%>
-								</em></td>
-						</tr>
-					</table>
-				</div>
-				<div id="visit_pagination" style="margin-top: 20px;"></div>
-			</div>
+            <div id="tab-visit-records" class="tab-body">
+                <div class="visit-record-scroll">
+                    <div class="visit-traffic-hint"><%:Only observed forwarded traffic after app identification is counted. Unavailable data is shown as —; bypass downstream traffic may be unavailable.%></div>
+                    <table class="table cbi-section-table visit-record-table" id="visit_list_table">
+                        <colgroup>
+                            <col class="visit-app-col">
+                            <col class="visit-time-col">
+                            <col class="visit-time-col">
+                            <col class="visit-duration-col">
+                            <col class="visit-traffic-col">
+                            <col class="visit-traffic-col">
+                            <col class="visit-traffic-col">
+                            <col class="visit-status-col">
+                            <col class="visit-status-col">
+                        </colgroup>
+                        <tr class="tr table-titles">
+                            <th class="th"><%:App Name%></th>
+                            <th class="th"><%:First Visit%></th>
+                            <th class="th"><%:Last Visit%></th>
+                            <th class="th"><%:Duration%></th>
+                            <th class="th visit-traffic-cell"><%:Upstream Traffic%></th>
+                            <th class="th visit-traffic-cell"><%:Downstream Traffic%></th>
+                            <th class="th visit-traffic-cell"><%:Total Traffic%></th>
+                            <th class="th"><%:Online Status%></th>
+                            <th class="th"><%:Filter Status%></th>
+                        </tr>
+                        <tr class="tr">
+                            <td class="td" colspan="9"><em><br /><%:Collecting data...%></em></td>
+                        </tr>
+                    </table>
+                </div>
+                <div id="visit_pagination" style="margin-top: 20px;"></div>
+            </div>
 		</div>
 	</div>
 </div>
@@ -1781,6 +1807,34 @@
     .detail-status-online { color: #2563eb; }
     .detail-status-negative { color: #b91c1c; }
     .visit-pagination-summary { color: var(--text-color-medium, #6b7280); }
+    .visit-record-scroll {
+        overflow-x: auto;
+        overflow-y: auto;
+        max-height: 1000px;
+        max-width: 100%;
+        padding-right: 20px;
+    }
+    .visit-record-table {
+        min-width: 1000px;
+    }
+    .visit-traffic-cell {
+        text-align: right;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+    }
+    .th.visit-traffic-cell {
+        white-space: normal;
+    }
+    .visit-traffic-col { width: 10%; }
+    .visit-app-col { width: 22%; }
+    .visit-time-col { width: 17%; }
+    .visit-duration-col { width: 7%; }
+    .visit-status-col { width: 7%; }
+    .visit-traffic-hint {
+        margin: 0 0 10px;
+        color: var(--text-color-medium, #6b7280);
+        font-size: 0.9em;
+    }
     [data-darkmode="true"] .detail-status-positive { color: #86efac; }
     [data-darkmode="true"] .detail-status-online,
     [data-darkmode="true"] .behavior-whitelist-hint { color: #93c5fd; }

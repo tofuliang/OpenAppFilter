@@ -130,6 +130,24 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         }
     }
 
+    /* Per-app byte deltas have an independent visit creation/merge path. Return
+     * before terminal traffic or activity accounting to avoid counting the
+     * same report twice or extending terminal online/active duration. */
+    struct json_object *probe_traffic = NULL;
+    if (json_object_object_get_ex(root, "app_traffic", &probe_traffic)) {
+        struct timeval traffic_time;
+        gettimeofday(&traffic_time, NULL);
+        u_int32_t today_start = get_today_start_timestamp();
+        if ((u_int32_t)traffic_time.tv_sec >= today_start &&
+            ((u_int32_t)traffic_time.tv_sec - today_start) < 120) {
+            json_object_put(root);
+            return;
+        }
+        apply_visit_traffic_json(node, root, &traffic_time);
+        json_object_put(root);
+        return;
+    }
+
     struct json_object *ip_obj = json_object_object_get(root, "ip");
     if (ip_obj)
         strncpy(node->ip, json_object_get_string(ip_obj), sizeof(node->ip));
@@ -245,6 +263,12 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         
         int appid = json_object_get_int(appid_obj);
         int action = json_object_get_int(action_obj);
+        struct json_object *known_obj = json_object_object_get(visit_obj, "traffic_known");
+        /* Normal reports describe observability without byte deltas: gateway
+         * and blocked visits know both directions, bypass visits know neither.
+         * Later app_traffic can independently mark a direction as known. */
+        int up_known = known_obj && json_object_get_boolean(known_obj);
+        int down_known = up_known;
 
         type = appid / 1000;
         id = appid % 1000;
@@ -282,15 +306,19 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         visit_info_t *p = NULL;
         int found = 0;
         int cur_time_sec = cur_time.tv_sec;
-        
+
         list_for_each_entry(p, &node->online_visit, visit) {
             if (p->appid == appid && p->action == action) {
                 p->latest_time = cur_time_sec;
+                if (up_known)
+                    p->up_known = 1;
+                if (down_known)
+                    p->down_known = 1;
                 found = 1;
                 break;
             }
         }
-        
+
 
         if (!found) {
             p = (visit_info_t *)calloc(1, sizeof(visit_info_t));
@@ -300,10 +328,12 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
             p->first_time = cur_time_sec;
             p->latest_time = cur_time_sec;
             p->action = action;
+            p->up_known = up_known;
+            p->down_known = down_known;
             INIT_LIST_HEAD(&p->visit);
 
             add_visit_info_node(&node->online_visit, p);
-			
+
         }
     }
     json_object_put(root);

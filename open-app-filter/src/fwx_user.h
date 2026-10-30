@@ -4,9 +4,11 @@
 */
 #include <sys/types.h>
 #include <libubox/list.h>
+#include <sys/time.h>
 #ifndef __FILTER_USER_H__
 #define __FILTER_USER_H__
 #include <sqlite3.h>
+#include <json-c/json.h>
 #define MAX_IP_LEN 32
 #define MAX_MAC_LEN 32
 
@@ -28,6 +30,7 @@
 #define MAX_RECORD_DAY 30  
 #define MAX_RECENT_APPS 5
 #define MAX_USER_RECORDS 4096
+#define MAX_APP_TRAFFIC_ITEMS 64
 
 
 typedef struct visit_info
@@ -36,8 +39,13 @@ typedef struct visit_info
     u_int32_t first_time;
     u_int32_t latest_time;
     int action;
-    int expire; 
-    struct list_head visit; 
+    int expire;
+    unsigned long long up_bytes;
+    unsigned long long down_bytes;
+    /* Direction-specific known state: a missing direction remains unknown. */
+    int up_known;
+    int down_known;
+    struct list_head visit;
 
 } visit_info_t;
 
@@ -187,6 +195,9 @@ void dump_client_visit_list(void);
 client_node_t *find_client_node(const char *mac);
 void client_foreach(void *arg, iter_func iter);
 void add_visit_info_node(struct list_head *visit_list, visit_info_t *node);
+int apply_visit_traffic_json(client_node_t *node, struct json_object *root, struct timeval *cur_time);
+void add_visit_json_traffic(struct json_object *item, const visit_info_t *visit);
+void add_visit_json_traffic_row(struct json_object *item, sqlite3_stmt *stmt, int up_col, int down_col);
 void check_client_visit_info_expire(void);
 void flush_expire_visit_info(void);
 int check_client_expire(void);

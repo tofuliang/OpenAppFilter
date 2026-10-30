@@ -10,6 +10,8 @@
             <li class="tab-item" data-tab="history-records"><%:History Records%></li>
         </ul>
 
+        <div class="record-traffic-hint"><%:Only observed forwarded traffic after app identification is counted. Unavailable data is shown as —; bypass downstream traffic may be unavailable.%></div>
+
         <div id="tab-online-records" class="tab-body active">
             <div class="record-table-scroll">
             <table class="table cbi-section-table" id="online-record-table" style="table-layout: fixed; width: 100%;">
@@ -21,6 +23,9 @@
                     <col class="record-time-col">
                     <col class="record-time-col">
                     <col class="record-duration-col">
+                    <col class="record-traffic-col">
+                    <col class="record-traffic-col">
+                    <col class="record-traffic-col">
                     <col class="record-status-col">
                     <col class="record-status-col">
                 </colgroup>
@@ -32,11 +37,14 @@
                     <th class="th"><%:First Visit%></th>
                     <th class="th"><%:Last Visit%></th>
                     <th class="th"><%:Duration%></th>
+                    <th class="th record-traffic-cell"><%:Upstream Traffic%></th>
+                    <th class="th record-traffic-cell"><%:Downstream Traffic%></th>
+                    <th class="th record-traffic-cell"><%:Total Traffic%></th>
                     <th class="th"><%:Online%></th>
                     <th class="th"><%:Filter Status%></th>
                 </tr>
                 <tr class="tr">
-                    <td class="td" colspan="9"><em><br /><%:Loading...%></em></td>
+                    <td class="td" colspan="12"><em><br /><%:Loading...%></em></td>
                 </tr>
             </table>
             </div>
@@ -66,6 +74,9 @@
                     <col class="record-time-col">
                     <col class="record-time-col">
                     <col class="record-duration-col">
+                    <col class="record-traffic-col">
+                    <col class="record-traffic-col">
+                    <col class="record-traffic-col">
                     <col class="record-status-col">
                     <col class="record-status-col">
                 </colgroup>
@@ -77,14 +88,18 @@
                     <th class="th"><%:First Visit%></th>
                     <th class="th"><%:Last Visit%></th>
                     <th class="th"><%:Duration%></th>
+                    <th class="th record-traffic-cell"><%:Upstream Traffic%></th>
+                    <th class="th record-traffic-cell"><%:Downstream Traffic%></th>
+                    <th class="th record-traffic-cell"><%:Total Traffic%></th>
                     <th class="th"><%:Online%></th>
                     <th class="th"><%:Filter Status%></th>
                 </tr>
                 <tr class="tr">
-                    <td class="td" colspan="9"><em><br /><%:Loading...%></em></td>
+                    <td class="td" colspan="12"><em><br /><%:Loading...%></em></td>
                 </tr>
             </table>
             </div>
+
             <div class="record-load-state" id="history-record-state" aria-live="polite">
                 <span class="record-loading" style="display:none;"><%:Loading...%></span>
                 <span class="record-error" style="display:none;"><%:Load failed%> <button type="button" class="cbi-button record-retry"><%:Refresh%></button></span>
@@ -133,7 +148,7 @@
     overflow-y: hidden;
 }
 .record-table-scroll table {
-    min-width: 1050px;
+    min-width: 1320px;
 }
 .record-load-state {
     margin-top: 12px;
@@ -179,6 +194,10 @@
 #history-record-table .record-duration-col {
     width: 8%;
 }
+#online-record-table .record-traffic-col,
+#history-record-table .record-traffic-col {
+    width: 10%;
+}
 #online-record-table .record-status-col,
 #history-record-table .record-status-col {
     width: 6%;
@@ -209,6 +228,19 @@
 [data-darkmode="true"] .record-status-offline { color: #fca5a5; }
 [data-darkmode="true"] .record-status-unfiltered,
 [data-darkmode="true"] .record-status-online { color: #86efac; }
+.record-traffic-cell {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.th.record-traffic-cell {
+    white-space: normal;
+}
+.record-traffic-hint {
+    margin: 8px 0 10px;
+    color: var(--text-color-medium, #6b7280);
+    font-size: 0.9em;
+}
 </style>
 
 <script type="text/javascript">
@@ -259,6 +291,26 @@
         if (h > 0) return h + "h" + (m > 0 ? " " + m + "m" : "");
         if (m > 0) return m + "m" + (r > 0 ? " " + r + "s" : "");
         return r + "s";
+    }
+    function formatTraffic(bytes) {
+        if (!bytes || bytes < 1024) return (bytes || 0) + ' B';
+        if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+        if (bytes < 1024 * 1024 * 1024) return Math.round(bytes / (1024 * 1024)) + ' MB';
+        return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+
+    function traffic_value_known(value) {
+        return value !== null && value !== undefined && value !== ''
+            && isFinite(Number(value)) && Number(value) >= 0;
+    }
+
+    function format_record_traffic(value) {
+        return traffic_value_known(value) ? formatTraffic(Number(value)) : '—';
+    }
+
+    function format_total_traffic(up_bytes, down_bytes) {
+        return traffic_value_known(up_bytes) && traffic_value_known(down_bytes)
+            ? formatTraffic(Number(up_bytes) + Number(down_bytes)) : '—';
     }
 
     function get_ts_from_input(selector) {
@@ -320,7 +372,7 @@
         if (state.rows === 0) {
             $tb.find('tr:gt(0)').remove();
             if (list.length === 0) {
-                $tb.append('<tr class="tr"><td class="td" colspan="9"><em><br />' + text.noData + '</em></td></tr>');
+                $tb.append('<tr class="tr"><td class="td" colspan="12"><em><br />' + text.noData + '</em></td></tr>');
                 return;
             }
         }
@@ -336,6 +388,8 @@
             var tt = item.tt || item.total_time || 0;
             var act = item.act || item.latest_action || 0;
             var online = item.online || 0;
+            var up_bytes = item.up_bytes;
+            var down_bytes = item.down_bytes;
 
             var $row = $('<tr>').addClass('tr');
             var $appCell = $('<td>').addClass('td record-app-td');
@@ -349,6 +403,9 @@
                 .append($('<td>').addClass('td').text(format_time(ft)))
                 .append($('<td>').addClass('td').text(format_time(lt)))
                 .append($('<td>').addClass('td').text(format_duration(tt)))
+                .append($('<td>').addClass('td record-traffic-cell').text(format_record_traffic(up_bytes)))
+                .append($('<td>').addClass('td record-traffic-cell').text(format_record_traffic(down_bytes)))
+                .append($('<td>').addClass('td record-traffic-cell').text(format_total_traffic(up_bytes, down_bytes)))
                 .append($('<td>').addClass('td').html(render_online_status(online)))
                 .append($('<td>').addClass('td').html(render_filter_status(act)));
             fragment.appendChild($row[0]);

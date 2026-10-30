@@ -121,13 +121,45 @@ void cJSON_Delete(cJSON *c)
 
 static const char *parse_number(cJSON *item,const char *num)
 {
-	int n=0,sign=1;
+	unsigned long long magnitude = 0;
+	unsigned int last_digit;
+	long long value;
+	const char *digits;
+	int negative = 0;
+	int overflow = 0;
 
-	if (*num=='-') sign=-1,num++;	
-	if (*num=='0') num++;			
-	if (*num>='1' && *num<='9')	do	n=(n*10)+(*num++ -'0');	while (*num>='0' && *num<='9');	
-	item->valueint=(int)n;
-	item->type=cJSON_Number;
+	if (*num == '-') {
+		negative = 1;
+		num++;
+	}
+	digits = num;
+	last_digit = negative ? 8 : 7;
+	while (*num >= '0' && *num <= '9') {
+		unsigned int digit = *num - '0';
+		if (!overflow) {
+			if (magnitude > 922337203685477580ULL ||
+			    (magnitude == 922337203685477580ULL && digit > last_digit))
+				overflow = 1;
+			else
+				magnitude = magnitude * 10 + digit;
+		}
+		num++;
+	}
+	if (num == digits)
+		return 0;
+
+	if (overflow)
+		value = negative ? (-0x7fffffffffffffffLL - 1LL) : 0x7fffffffffffffffLL;
+	else if (negative)
+		value = magnitude == 0x8000000000000000ULL ?
+			(-0x7fffffffffffffffLL - 1LL) : -(long long)magnitude;
+	else
+		value = (long long)magnitude;
+
+	item->valueint64 = value;
+	/* Keep the legacy 32-bit view for existing ID/option consumers. */
+	item->valueint = (int)value;
+	item->type = cJSON_Number;
 	return num;
 }
 
@@ -135,9 +167,9 @@ static const char *parse_number(cJSON *item,const char *num)
 static char *print_number(cJSON *item)
 {
 	char *str;
-	str=(char*)cJSON_malloc(21);
+	str=(char*)cJSON_malloc(32);
 	if (str)
-		sprintf(str,"%d",item->valueint);
+		sprintf(str,"%lld",item->valueint64);
 	return str;
 }
 
@@ -530,14 +562,43 @@ cJSON *cJSON_GetObjectItem(cJSON *object,const char *string)	{cJSON *c=object?ob
 static void suffix_object(cJSON *prev,cJSON *item) {prev->next=item;item->prev=prev;}
 
 
-void   cJSON_AddItemToArray(cJSON *array, cJSON *item)						{cJSON *c;if (!array || !item) return;c=array->child;if (!c) {array->child=item;} else {while (c->next) c=c->next; suffix_object(c,item);}}
-void   cJSON_AddItemToObject(cJSON *object,const char *string,cJSON *item)	{if (!object || !item) return;if (item->string) cJSON_free(item->string);item->string=cJSON_strdup(string);if (!item->string) {cJSON_Delete(item);return;}cJSON_AddItemToArray(object,item);}
+int cJSON_AddItemToArray(cJSON *array, cJSON *item)
+{
+	cJSON *c;
+
+	if (!array || !item)
+		return 0;
+	c = array->child;
+	if (!c)
+		array->child = item;
+	else {
+		while (c->next)
+			c = c->next;
+		suffix_object(c, item);
+	}
+	return 1;
+}
+
+int cJSON_AddItemToObject(cJSON *object, const char *string, cJSON *item)
+{
+	if (!object || !string || !item)
+		return 0;
+	if (item->string)
+		cJSON_free(item->string);
+	item->string = cJSON_strdup(string);
+	if (!item->string) {
+		cJSON_Delete(item);
+		return 0;
+	}
+	return cJSON_AddItemToArray(object, item);
+}
 
 
 cJSON *cJSON_CreateNull()						{cJSON *item=cJSON_New_Item();if (item) item->type=cJSON_NULL;return item;}
 cJSON *cJSON_CreateTrue()						{cJSON *item=cJSON_New_Item();if (item) item->type=cJSON_True;return item;}
 cJSON *cJSON_CreateFalse()						{cJSON *item=cJSON_New_Item();if (item) item->type=cJSON_False;return item;}
-cJSON *cJSON_CreateNumber(int num)			{cJSON *item=cJSON_New_Item();if (item) {item->type=cJSON_Number;item->valueint=(int)num;}return item;}
+cJSON *cJSON_CreateNumber(int num)			{cJSON *item=cJSON_New_Item();if (item) {item->type=cJSON_Number;item->valueint=(int)num;item->valueint64=(long long)num;}return item;}
+cJSON *cJSON_CreateNumber64(long long num)		{cJSON *item=cJSON_New_Item();if (item) {item->type=cJSON_Number;item->valueint64=num;item->valueint=(int)num;}return item;}
 cJSON *cJSON_CreateString(const char *string)	{cJSON *item=cJSON_New_Item();if (item) {item->type=cJSON_String;item->valuestring=cJSON_strdup(string);if (!item->valuestring) {cJSON_free(item);item=0;}}return item;}
 cJSON *cJSON_CreateArray()						{cJSON *item=cJSON_New_Item();if (item) item->type=cJSON_Array;return item;}
 cJSON *cJSON_CreateObject()						{cJSON *item=cJSON_New_Item();if (item) item->type=cJSON_Object;return item;}

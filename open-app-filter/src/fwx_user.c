@@ -833,10 +833,55 @@ static void build_client_visit_db_path(char *db_path, size_t len) {
     snprintf(db_path, len, "%s/client.db", get_history_data_root_dir());
 }
 
+void add_visit_json_traffic(struct json_object *item, const visit_info_t *visit) {
+    if (!item || !visit)
+        return;
+
+    /* 方向独立：从未上报过的方向保持 null（旁路模式下行），0 只代表确实采到 0。 */
+    if (visit->up_known)
+        json_object_object_add(item, "up_bytes", json_object_new_int64((sqlite3_int64)visit->up_bytes));
+    else
+        json_object_object_add(item, "up_bytes", json_object_new_null());
+
+    if (visit->down_known)
+        json_object_object_add(item, "down_bytes", json_object_new_int64((sqlite3_int64)visit->down_bytes));
+    else
+        json_object_object_add(item, "down_bytes", json_object_new_null());
+}
+
+void add_visit_json_traffic_row(struct json_object *item, sqlite3_stmt *stmt, int up_col, int down_col) {
+    if (!item || !stmt)
+        return;
+
+    if (up_col >= 0 && sqlite3_column_type(stmt, up_col) != SQLITE_NULL)
+        json_object_object_add(item, "up_bytes", json_object_new_int64(sqlite3_column_int64(stmt, up_col)));
+    else
+        json_object_object_add(item, "up_bytes", json_object_new_null());
+
+    if (down_col >= 0 && sqlite3_column_type(stmt, down_col) != SQLITE_NULL)
+        json_object_object_add(item, "down_bytes", json_object_new_int64(sqlite3_column_int64(stmt, down_col)));
+    else
+        json_object_object_add(item, "down_bytes", json_object_new_null());
+}
+
+
+
 static int ensure_app_visit_record_schema(sqlite3 *db) {
     sqlite3_stmt *stmt = NULL;
-    int rc;
-    int has_id = 0;
+    int rc = SQLITE_OK;
+    int has_record_id = 0;
+    int has_up_bytes = 0;
+    int has_down_bytes = 0;
+    char migration_sql[2048];
+    const char *up_expr;
+    const char *down_expr;
+
+    if (!db)
+        return SQLITE_MISUSE;
+
+    rc = sqlite3_exec(db, "BEGIN IMMEDIATE;", NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        return rc;
 
     rc = sqlite3_exec(db,
                       "CREATE TABLE IF NOT EXISTS app_visit_record ("
@@ -847,57 +892,97 @@ static int ensure_app_visit_record_schema(sqlite3 *db) {
                       "start_time INTEGER NOT NULL,"
                       "end_time INTEGER NOT NULL,"
                       "duration INTEGER NOT NULL,"
-                      "action INTEGER NOT NULL"
+                      "action INTEGER NOT NULL,"
+                      "up_bytes INTEGER,"
+                      "down_bytes INTEGER"
                       ");", NULL, NULL, NULL);
     if (rc != SQLITE_OK)
-        return rc;
+        goto ROLLBACK;
 
     rc = sqlite3_prepare_v2(db, "PRAGMA table_info(app_visit_record);", -1, &stmt, NULL);
     if (rc != SQLITE_OK)
-        return rc;
+        goto ROLLBACK;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
         const char *name = (const char *)sqlite3_column_text(stmt, 1);
-        if (name && strcmp(name, "record_id") == 0) {
-            has_id = sqlite3_column_int(stmt, 5) == 1 ? 1 : -1;
-            break;
-        }
+
+        if (!name)
+            continue;
+        if (strcmp(name, "record_id") == 0)
+            has_record_id = sqlite3_column_int(stmt, 5) == 1 ? 1 : -1;
+        else if (strcmp(name, "up_bytes") == 0)
+            has_up_bytes = 1;
+        else if (strcmp(name, "down_bytes") == 0)
+            has_down_bytes = 1;
     }
     sqlite3_finalize(stmt);
-    if (rc != SQLITE_DONE && rc != SQLITE_ROW)
-        return rc;
-    if (has_id < 0)
-        return SQLITE_SCHEMA;
-
-    if (!has_id) {
-        // A rowid-only legacy table loses identity on VACUUM. Preserve its rows and
-        // existing rowids in a single transaction; future inserts cannot reuse IDs.
-        rc = sqlite3_exec(db,
-                          "BEGIN IMMEDIATE;"
-                          "CREATE TABLE app_visit_record_v2 ("
-                          "record_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                          "mac TEXT NOT NULL, record_date INTEGER NOT NULL, appid INTEGER NOT NULL,"
-                          "start_time INTEGER NOT NULL, end_time INTEGER NOT NULL,"
-                          "duration INTEGER NOT NULL, action INTEGER NOT NULL);"
-                          "INSERT INTO app_visit_record_v2 "
-                          "(record_id, mac, record_date, appid, start_time, end_time, duration, action) "
-                          "SELECT rowid, mac, record_date, appid, start_time, end_time, duration, action "
-                          "FROM app_visit_record;"
-                          "DROP TABLE app_visit_record;"
-                          "ALTER TABLE app_visit_record_v2 RENAME TO app_visit_record;"
-                          "CREATE INDEX idx_app_visit_record_date ON app_visit_record (record_date);"
-                          "CREATE INDEX idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);"
-                          "COMMIT;", NULL, NULL, NULL);
-        if (rc != SQLITE_OK)
-            sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
-        return rc;
+    stmt = NULL;
+    if (rc != SQLITE_DONE)
+        goto ROLLBACK;
+    if (has_record_id < 0) {
+        rc = SQLITE_SCHEMA;
+        goto ROLLBACK;
     }
 
-    return sqlite3_exec(db,
-                        "CREATE INDEX IF NOT EXISTS idx_app_visit_record_date ON app_visit_record (record_date);"
-                        "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);",
-                        NULL, NULL, NULL);
-}
+    if (!has_record_id) {
+        /* Legacy rowid-only tables need an explicit identity before history
+         * endpoints can order/filter records reliably. Preserve rowid and each
+         * existing direction byte column, including NULL values, atomically. */
+        up_expr = has_up_bytes ? "up_bytes" : "NULL";
+        down_expr = has_down_bytes ? "down_bytes" : "NULL";
+        snprintf(migration_sql, sizeof(migration_sql),
+                 "CREATE TABLE app_visit_record_v2 ("
+                 "record_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                 "mac TEXT NOT NULL, record_date INTEGER NOT NULL, appid INTEGER NOT NULL,"
+                 "start_time INTEGER NOT NULL, end_time INTEGER NOT NULL,"
+                 "duration INTEGER NOT NULL, action INTEGER NOT NULL,"
+                 "up_bytes INTEGER, down_bytes INTEGER);"
+                 "INSERT INTO app_visit_record_v2 "
+                 "(record_id, mac, record_date, appid, start_time, end_time, duration, action, up_bytes, down_bytes) "
+                 "SELECT rowid, mac, record_date, appid, start_time, end_time, duration, action, %s, %s "
+                 "FROM app_visit_record;"
+                 "DROP TABLE app_visit_record;"
+                 "ALTER TABLE app_visit_record_v2 RENAME TO app_visit_record;",
+                 up_expr, down_expr);
+        rc = sqlite3_exec(db, migration_sql, NULL, NULL, NULL);
+        if (rc != SQLITE_OK)
+            goto ROLLBACK;
+    } else {
+        /* ALTER TABLE accepts one column per statement. Detect each column
+         * independently so partially migrated schemas are repaired safely. */
+        if (!has_up_bytes) {
+            rc = sqlite3_exec(db,
+                              "ALTER TABLE app_visit_record ADD COLUMN up_bytes INTEGER;",
+                              NULL, NULL, NULL);
+            if (rc != SQLITE_OK)
+                goto ROLLBACK;
+        }
+        if (!has_down_bytes) {
+            rc = sqlite3_exec(db,
+                              "ALTER TABLE app_visit_record ADD COLUMN down_bytes INTEGER;",
+                              NULL, NULL, NULL);
+            if (rc != SQLITE_OK)
+                goto ROLLBACK;
+        }
+    }
 
+    rc = sqlite3_exec(db,
+                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_date ON app_visit_record (record_date);"
+                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);",
+                      NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto ROLLBACK;
+
+    rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto ROLLBACK;
+    return SQLITE_OK;
+
+ROLLBACK:
+    if (stmt)
+        sqlite3_finalize(stmt);
+    sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+    return rc;
+}
 
 int open_client_visit_db(sqlite3 **db) {
     char db_path[512] = {0};
@@ -947,8 +1032,8 @@ static int save_visit_record_to_db(const char *mac, visit_info_t *visit) {
         return -1;
 
     rc = sqlite3_prepare_v2(db,
-                            "INSERT INTO app_visit_record (mac, record_date, appid, start_time, end_time, duration, action) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?);",
+                            "INSERT INTO app_visit_record (mac, record_date, appid, start_time, end_time, duration, action, up_bytes, down_bytes) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
                             -1, &stmt, NULL);
     if (rc != SQLITE_OK)
         goto CLEANUP;
@@ -965,6 +1050,14 @@ static int save_visit_record_to_db(const char *mac, visit_info_t *visit) {
     sqlite3_bind_int64(stmt, 5, visit->latest_time);
     sqlite3_bind_int(stmt, 6, duration);
     sqlite3_bind_int(stmt, 7, visit->action);
+    if (visit->up_known)
+        sqlite3_bind_int64(stmt, 8, (sqlite3_int64)visit->up_bytes);
+    else
+        sqlite3_bind_null(stmt, 8);
+    if (visit->down_known)
+        sqlite3_bind_int64(stmt, 9, (sqlite3_int64)visit->down_bytes);
+    else
+        sqlite3_bind_null(stmt, 9);
 
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE)
@@ -1044,8 +1137,9 @@ int add_mock_visit_records_to_db(int record_count, int mac_count, unsigned long 
     transaction_started = 1;
 
     rc = sqlite3_prepare_v2(db,
-                            "INSERT INTO app_visit_record (mac, record_date, appid, start_time, end_time, duration, action) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?);",
+                            "INSERT INTO app_visit_record "
+                            "(mac, record_date, appid, start_time, end_time, duration, action, up_bytes, down_bytes) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
                             -1, &stmt, NULL);
     if (rc != SQLITE_OK)
         goto CLEANUP;
@@ -1073,6 +1167,10 @@ int add_mock_visit_records_to_db(int record_count, int mac_count, unsigned long 
         sqlite3_bind_int64(stmt, 5, end_time);
         sqlite3_bind_int(stmt, 6, duration);
         sqlite3_bind_int(stmt, 7, action);
+        /* Mock rows stay traffic-unknown: leave up_bytes/down_bytes NULL so the
+         * inserted records never invent per-app traffic statistics. */
+        sqlite3_bind_null(stmt, 8);
+        sqlite3_bind_null(stmt, 9);
 
         rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE)
@@ -1775,6 +1873,102 @@ void add_visit_info_node(struct list_head *visit_list, visit_info_t *node)
 
 
     list_add(&node->visit, visit_list);
+}
+
+/* A byte field is known only for a non-negative JSON integer. Missing, null
+ * and malformed values stay unknown; an explicit integer zero is known. */
+static int read_visit_traffic_bytes(struct json_object *item, const char *key,
+                                  unsigned long long *bytes)
+{
+    struct json_object *value = NULL;
+    int64_t amount;
+
+    if (!json_object_object_get_ex(item, key, &value) ||
+        !json_object_is_type(value, json_type_int))
+        return 0;
+    amount = json_object_get_int64(value);
+    if (amount < 0)
+        return 0;
+
+    *bytes = (unsigned long long)amount;
+    return 1;
+}
+
+int apply_visit_traffic_json(client_node_t *node, struct json_object *root, struct timeval *cur_time)
+{
+    struct json_object *traffic_array = NULL;
+    int valid_count;
+    int i;
+
+    if (!node || !root || !cur_time)
+        return -1;
+    if (!json_object_object_get_ex(root, "app_traffic", &traffic_array))
+        return 0;
+    if (!json_object_is_type(traffic_array, json_type_array))
+        return -1;
+
+    valid_count = json_object_array_length(traffic_array);
+    if (valid_count > MAX_APP_TRAFFIC_ITEMS)
+        valid_count = MAX_APP_TRAFFIC_ITEMS;
+
+    for (i = 0; i < valid_count; i++) {
+        struct json_object *traffic_item = json_object_array_get_idx(traffic_array, i);
+        struct json_object *appid_obj = NULL;
+        int64_t appid_value;
+        int appid;
+        unsigned long long up_bytes = 0;
+        unsigned long long down_bytes = 0;
+        int up_known;
+        int down_known;
+        struct list_head *pos;
+        visit_info_t *entry = NULL;
+
+        if (!json_object_is_type(traffic_item, json_type_object) ||
+            !json_object_object_get_ex(traffic_item, "appid", &appid_obj) ||
+            !json_object_is_type(appid_obj, json_type_int))
+            continue;
+        appid_value = json_object_get_int64(appid_obj);
+        if (appid_value <= 0 || appid_value > INT_MAX)
+            continue;
+        appid = (int)appid_value;
+        up_known = read_visit_traffic_bytes(traffic_item, "up_bytes", &up_bytes);
+        down_known = read_visit_traffic_bytes(traffic_item, "down_bytes", &down_bytes);
+        if (!up_known && !down_known)
+            continue;
+
+        /* app_traffic contains forwarded L3 byte deltas only. Never let an
+         * optional action field route them into a blocked visit. Traffic may
+         * arrive before, or without, the bounded normal visit report. */
+        list_for_each(pos, &node->online_visit) {
+            visit_info_t *candidate = list_entry(pos, visit_info_t, visit);
+            if (candidate->appid == appid && candidate->action == 0) {
+                entry = candidate;
+                break;
+            }
+        }
+        if (!entry) {
+            entry = (visit_info_t *)calloc(1, sizeof(visit_info_t));
+            if (!entry) {
+                LOG_ERROR("apply_visit_traffic_json: alloc failed for appid=%d\n", appid);
+                return -1;
+            }
+            entry->appid = appid;
+            entry->action = 0;
+            entry->first_time = cur_time->tv_sec;
+            INIT_LIST_HEAD(&entry->visit);
+            add_visit_info_node(&node->online_visit, entry);
+        }
+        if (up_known) {
+            entry->up_bytes += up_bytes;
+            entry->up_known = 1;
+        }
+        if (down_known) {
+            entry->down_bytes += down_bytes;
+            entry->down_known = 1;
+        }
+        entry->latest_time = cur_time->tv_sec;
+    }
+    return 0;
 }
 
 static void normalize_mac_lower(const char *src, char *dst, size_t dst_len)
@@ -2605,7 +2799,7 @@ void move_expired_online_visit_to_offline(void)
                 
 
                 int total_time = p_info->latest_time - p_info->first_time;
-                if (total_time < g_app_valid_time) {
+                if (total_time < g_app_valid_time && !p_info->up_known && !p_info->down_known) {
                     LOG_DEBUG("Discard visit record (too short): mac=%s, appid=%d, duration=%ds < %ds\n", 
                               node->mac, p_info->appid, total_time, g_app_valid_time);
                     free(p_info); 
@@ -3494,7 +3688,7 @@ void check_and_archive_all_clients(void) {
         list_for_each_entry_safe(p_info, tmp_info, &node->online_visit, visit) {
 
             int total_time = p_info->latest_time - p_info->first_time;
-            if (total_time < g_app_valid_time) {
+            if (total_time < g_app_valid_time && !p_info->up_known && !p_info->down_known) {
                 LOG_DEBUG("Discard visit record on date change (too short): mac=%s, appid=%d, duration=%ds < %ds\n", 
                           node->mac, p_info->appid, total_time, g_app_valid_time);
                 list_del(&p_info->visit);
@@ -3953,7 +4147,7 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
     if (rc != SQLITE_OK)
         goto CLEANUP;
     rc = sqlite3_prepare_v2(db,
-                            "UPDATE app_visit_record SET end_time = ?, duration = ? WHERE record_id = ?;",
+                            "UPDATE app_visit_record SET end_time = ?, duration = ?, up_bytes = ?, down_bytes = ? WHERE record_id = ?;",
                             -1, &update_stmt, NULL);
     if (rc != SQLITE_OK)
         goto CLEANUP;
@@ -3964,8 +4158,9 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
         goto CLEANUP;
 
     rc = sqlite3_prepare_v2(db,
-                            "INSERT INTO app_visit_record (mac, record_date, appid, start_time, end_time, duration, action) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?);",
+                            "INSERT INTO app_visit_record "
+                            "(mac, record_date, appid, start_time, end_time, duration, action, up_bytes, down_bytes) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
                             -1, &insert_stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_ERROR("Failed to prepare insert statement: %s (rc: %d)\n", file_path, rc);
@@ -3998,7 +4193,15 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
 
             sqlite3_bind_int64(update_stmt, 1, p_info->latest_time);
             sqlite3_bind_int(update_stmt, 2, duration);
-            sqlite3_bind_int64(update_stmt, 3, record_id);
+            if (p_info->up_known)
+                sqlite3_bind_int64(update_stmt, 3, (sqlite3_int64)p_info->up_bytes);
+            else
+                sqlite3_bind_null(update_stmt, 3);
+            if (p_info->down_known)
+                sqlite3_bind_int64(update_stmt, 4, (sqlite3_int64)p_info->down_bytes);
+            else
+                sqlite3_bind_null(update_stmt, 4);
+            sqlite3_bind_int64(update_stmt, 5, record_id);
             rc = sqlite3_step(update_stmt);
             if (rc != SQLITE_DONE)
                 goto CLEANUP;
@@ -4015,6 +4218,14 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
             sqlite3_bind_int64(insert_stmt, 5, p_info->latest_time);
             sqlite3_bind_int(insert_stmt, 6, duration);
             sqlite3_bind_int(insert_stmt, 7, p_info->action);
+            if (p_info->up_known)
+                sqlite3_bind_int64(insert_stmt, 8, (sqlite3_int64)p_info->up_bytes);
+            else
+                sqlite3_bind_null(insert_stmt, 8);
+            if (p_info->down_known)
+                sqlite3_bind_int64(insert_stmt, 9, (sqlite3_int64)p_info->down_bytes);
+            else
+                sqlite3_bind_null(insert_stmt, 9);
             rc = sqlite3_step(insert_stmt);
             if (rc != SQLITE_DONE)
                 goto CLEANUP;

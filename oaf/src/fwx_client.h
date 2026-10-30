@@ -21,7 +21,9 @@ extern int g_min_http_match_count;
 
 #define MAX_AF_CLIENT_HASH_SIZE 64
 #define MAX_CLIENT_ACTIVE_TIME 180
-
+/* Retry pending app bytes for at most 600s after the last app/client activity;
+ * a permanently failed consumer must not retain stale records forever. */
+#define MAX_CLIENT_PENDING_RETENTION_TIME 600
 #define AF_CLIENT_LOCK_R() read_lock_bh(&af_client_lock);
 #define AF_CLIENT_UNLOCK_R() read_unlock_bh(&af_client_lock);
 #define AF_CLIENT_LOCK_W() write_lock_bh(&af_client_lock);
@@ -67,6 +69,8 @@ typedef struct app_visit_info
 	unsigned int latest_action;
 	unsigned int conn_count;
 	unsigned int is_http;
+	unsigned long long up_bytes;
+	unsigned long long down_bytes;
 } app_visit_info_t;
 
 typedef struct visiting_info{
@@ -96,7 +100,10 @@ typedef struct af_client_info
 	int record_whitelist;
 	visiting_info_t visiting;
 	int report_count;
-	unsigned int timer_count;  
+	unsigned int timer_count;
+	/* Last app id successfully sent; numeric cursor gives bounded fair rotation
+	 * without retaining an app_visit_info pointer across unlocked work. */
+	unsigned int app_traffic_cursor;
 	spinlock_t visit_info_lock;
 	struct hlist_head visit_info_hash[MAX_VISIT_INFO_HASH_SIZE];
 	struct proc_dir_entry *proc_dir;
@@ -116,6 +123,7 @@ af_client_info_t *nf_client_add(unsigned char *mac);
 af_client_info_t *find_and_add_af_client(unsigned char *mac);
 app_visit_info_t *get_or_create_visit_info(af_client_info_t *node, unsigned int app_id);
 int af_update_client_app_info(af_client_info_t *node, int app_id, int drop, int from_conntrack, int is_http, int update_visiting);
+int af_record_app_traffic(af_client_info_t *node, unsigned int app_id, int pkt_dir, unsigned int bytes);
 void check_expired_visit_info(af_client_info_t *node);
 
 int fwx_match_record_whitelist(const unsigned char *mac);

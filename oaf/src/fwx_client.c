@@ -38,6 +38,7 @@
 #include "fwx_utils.h"
 #include "fwx.h"
 #include "k_json.h"
+#include "fwx_conntrack.h"
 
 DEFINE_RWLOCK(af_client_lock);
 
@@ -61,6 +62,7 @@ static mac_config_t g_record_whitelist;
 
 
 int af_send_msg_to_user(char *pbuf, uint16_t len);
+extern int parse_flow_proto(struct sk_buff *skb, flow_info_t *flow);
 extern char *ipv6_to_str(const struct in6_addr *addr, char *str);
 
 
@@ -347,6 +349,7 @@ static void af_client_rcu_free(struct rcu_head *rcu)
 	kfree(node);
 }
 
+static int af_client_pending_within_retention(af_client_info_t *node);
 static void collect_expired_clients(struct list_head *expired)
 {
 	af_client_info_t *node, *tmp;
@@ -360,6 +363,10 @@ static void collect_expired_clients(struct list_head *expired)
 		{
 			if (!time_after(jiffies, node->update_jiffies +
 					MAX_CLIENT_ACTIVE_TIME * HZ))
+				continue;
+			/* Failed delivery retains the client only for a bounded period;
+			 * after that, dropping stale pending data is intentional. */
+			if (af_client_pending_within_retention(node))
 				continue;
 			list_del_rcu(&node->hlist);
 			list_add_tail(&node->hlist, expired);
@@ -389,6 +396,36 @@ static app_visit_info_t *find_visit_info(af_client_info_t *node, unsigned int ap
 	return NULL;
 }
 
+static int af_client_pending_locked(af_client_info_t *node)
+{
+	struct hlist_head *head;
+	app_visit_info_t *info;
+	int i;
+
+	for (i = 0; i < MAX_VISIT_INFO_HASH_SIZE; i++) {
+		head = &node->visit_info_hash[i];
+		hlist_for_each_entry(info, head, hlist) {
+			if (info->up_bytes || info->down_bytes)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+static int af_client_pending_within_retention(af_client_info_t *node)
+{
+	int retain;
+
+	if (time_after(jiffies, node->update_jiffies +
+			MAX_CLIENT_PENDING_RETENTION_TIME * HZ))
+		return 0;
+
+	spin_lock_bh(&node->visit_info_lock);
+	retain = af_client_pending_locked(node);
+	spin_unlock_bh(&node->visit_info_lock);
+	return retain;
+}
+
 app_visit_info_t *get_or_create_visit_info(af_client_info_t *node, unsigned int app_id)
 {
 	app_visit_info_t *info;
@@ -411,6 +448,32 @@ app_visit_info_t *get_or_create_visit_info(af_client_info_t *node, unsigned int 
 	return info;
 }
 
+int af_record_app_traffic(af_client_info_t *node, unsigned int app_id, int pkt_dir, unsigned int bytes)
+{
+	app_visit_info_t *info;
+	unsigned long long delta = bytes;
+
+	if (!node || !fwx_ct_is_valid_appid(app_id) || 0 == bytes)
+		return -1;
+	if (PKT_DIR_UP != pkt_dir && PKT_DIR_DOWN != pkt_dir)
+		return -1;
+
+	spin_lock_bh(&node->visit_info_lock);
+	info = get_or_create_visit_info(node, app_id);
+	if (!info) {
+		spin_unlock_bh(&node->visit_info_lock);
+		return -1;
+	}
+
+	if (PKT_DIR_UP == pkt_dir)
+		info->up_bytes += delta;
+	else
+		info->down_bytes += delta;
+	info->latest_time = af_get_timestamp_sec();
+	spin_unlock_bh(&node->visit_info_lock);
+	return 0;
+}
+
 void check_expired_visit_info(af_client_info_t *node)
 {
 	int i;
@@ -428,13 +491,227 @@ void check_expired_visit_info(af_client_info_t *node)
 	for (i = 0; i < MAX_VISIT_INFO_HASH_SIZE; i++) {
 		head = &node->visit_info_hash[i];
 		hlist_for_each_entry_safe(info, n, head, hlist) {
-			if (cur_timep - info->latest_time > VISIT_INFO_TIMEOUT_SEC) {
-				hlist_del(&info->hlist);
-				kfree(info);
+			if (info->up_bytes || info->down_bytes) {
+				/* Retry stale pending data for a finite window even when some
+				 * other application keeps this client alive. */
+				if (cur_timep - info->latest_time <= MAX_CLIENT_PENDING_RETENTION_TIME)
+					continue;
+			} else if (cur_timep - info->latest_time <= VISIT_INFO_TIMEOUT_SEC) {
+				continue;
 			}
+			hlist_del(&info->hlist);
+			kfree(info);
 		}
 	}
 	spin_unlock_bh(&node->visit_info_lock);
+}
+
+struct app_traffic_entry {
+	unsigned int app_id;
+	unsigned int order;
+	unsigned long long up_bytes;
+	unsigned long long down_bytes;
+};
+
+/* Worst-case entry (two signed 64-bit counters plus appid) stays below
+ * ~100 bytes, so 8 entries plus the root fields are safely under
+ * MAX_FWX_NL_MSG_LEN (1024). */
+#define APP_TRAFFIC_ENTRIES_PER_MSG 8
+
+static int af_send_app_traffic_msg(af_client_info_t *node,
+				   const struct app_traffic_entry *entries, int count)
+{
+	unsigned char mac_str[32] = {0};
+	cJSON *root_obj;
+	cJSON *array_obj;
+	cJSON *item;
+	cJSON *value;
+	char *out;
+	int i, ret;
+
+	if (!node || !entries || count <= 0 || count > APP_TRAFFIC_ENTRIES_PER_MSG)
+		return -1;
+
+	root_obj = cJSON_CreateObject();
+	if (!root_obj)
+		return -1;
+	array_obj = cJSON_CreateArray();
+	if (!array_obj)
+		goto fail_root;
+
+	sprintf(mac_str, MAC_FMT, MAC_ARRAY(node->mac));
+	value = cJSON_CreateString(mac_str);
+	if (!value || !cJSON_AddItemToObject(root_obj, "mac", value))
+		goto fail_root;
+
+	for (i = 0; i < count; i++) {
+		item = cJSON_CreateObject();
+		if (!item)
+			goto fail_root;
+
+		value = cJSON_CreateNumber(entries[i].app_id);
+		if (!value || !cJSON_AddItemToObject(item, "appid", value)) {
+			cJSON_Delete(item);
+			goto fail_root;
+		}
+		/* Increments only: an unobserved direction never emits a zero and is
+		 * never estimated. */
+		if (entries[i].up_bytes) {
+			value = cJSON_CreateNumber64(entries[i].up_bytes);
+			if (!value || !cJSON_AddItemToObject(item, "up_bytes", value)) {
+				cJSON_Delete(item);
+				goto fail_root;
+			}
+		}
+		if (entries[i].down_bytes) {
+			value = cJSON_CreateNumber64(entries[i].down_bytes);
+			if (!value || !cJSON_AddItemToObject(item, "down_bytes", value)) {
+				cJSON_Delete(item);
+				goto fail_root;
+			}
+		}
+		if (!cJSON_AddItemToArray(array_obj, item)) {
+			cJSON_Delete(item);
+			goto fail_root;
+		}
+	}
+	item = array_obj;
+	array_obj = NULL;
+	if (!cJSON_AddItemToObject(root_obj, "app_traffic", item))
+		goto fail_root;
+
+	out = cJSON_Print(root_obj);
+	cJSON_Delete(root_obj);
+	if (!out)
+		return -1;
+	cJSON_Minify(out);
+	if (strlen(out) >= MAX_FWX_NL_MSG_LEN) {
+		kfree(out);
+		return -1;
+	}
+	ret = af_send_msg_to_user(out, strlen(out));
+	kfree(out);
+	return ret;
+
+fail_root:
+	cJSON_Delete(array_obj);
+	cJSON_Delete(root_obj);
+	return -1;
+}
+
+static int compare_app_traffic_order(const void *a, const void *b)
+{
+	const struct app_traffic_entry *entry_a = a;
+	const struct app_traffic_entry *entry_b = b;
+
+	if (entry_a->order < entry_b->order)
+		return -1;
+	if (entry_a->order > entry_b->order)
+		return 1;
+	return 0;
+}
+
+/* Send per-app pending byte increments after the normal visit report.
+ * Pending counters are independent of visit activity counters, and the
+ * bounded numeric cursor rotates through them fairly across cycles. */
+static void af_send_app_traffic_report(af_client_info_t *node)
+{
+	struct app_traffic_entry *entries;
+	struct hlist_head *head;
+	app_visit_info_t *info;
+	unsigned int order;
+	int pos, parent, child;
+	int i, j, total = 0, base = 0;
+
+	if (!node)
+		return;
+
+	/* Heap snapshot keeps the workqueue stack and visit_info_lock critical
+	 * section small; cJSON/netlink run unlocked. The array is deliberately
+	 * bounded: no live app_visit_info pointer crosses the unlock. */
+	entries = kzalloc(sizeof(*entries) * MAX_RECORD_APP_NUM, GFP_KERNEL);
+	if (!entries)
+		return;
+
+	spin_lock_bh(&node->visit_info_lock);
+	/* A max-heap retains the next 64 app ids after the numeric cursor in one
+	 * O(N log 64) scan. Unsigned distance orders the wrap-around naturally. */
+	for (i = 0; i < MAX_VISIT_INFO_HASH_SIZE; i++) {
+		head = &node->visit_info_hash[i];
+		hlist_for_each_entry(info, head, hlist) {
+			if (!info->up_bytes && !info->down_bytes)
+				continue;
+			/* Use normal-report HTTP confidence without discarding pending bytes. */
+			if (info->is_http && info->conn_count <= g_min_http_match_count)
+				continue;
+			order = info->app_id - node->app_traffic_cursor - 1;
+			if (total < MAX_RECORD_APP_NUM) {
+				pos = total++;
+				while (pos) {
+					parent = (pos - 1) / 2;
+					if (entries[parent].order >= order)
+						break;
+					entries[pos] = entries[parent];
+					pos = parent;
+				}
+			} else {
+				if (order >= entries[0].order)
+					continue;
+				pos = 0;
+				while ((child = pos * 2 + 1) < total) {
+					if (child + 1 < total && entries[child + 1].order > entries[child].order)
+						child++;
+					if (entries[child].order <= order)
+						break;
+					entries[pos] = entries[child];
+					pos = child;
+				}
+			}
+			entries[pos].app_id = info->app_id;
+			entries[pos].order = order;
+			/* cJSON/SQLite use signed 64-bit integers. Chunk larger unsigned
+			 * pending values rather than emitting a negative byte increment. */
+			entries[pos].up_bytes = info->up_bytes > 0x7fffffffffffffffULL ?
+				0x7fffffffffffffffULL : info->up_bytes;
+			entries[pos].down_bytes = info->down_bytes > 0x7fffffffffffffffULL ?
+				0x7fffffffffffffffULL : info->down_bytes;
+		}
+	}
+	spin_unlock_bh(&node->visit_info_lock);
+	if (total > 1)
+		sort(entries, total, sizeof(*entries), compare_app_traffic_order, NULL);
+
+	while (base < total) {
+		int batch = total - base;
+
+		if (batch > APP_TRAFFIC_ENTRIES_PER_MSG)
+			batch = APP_TRAFFIC_ENTRIES_PER_MSG;
+
+		if (af_send_app_traffic_msg(node, entries + base, batch) < 0)
+			break; /* Failure: all entries in this and later batches stay pending. */
+
+		/* Deduct exactly the reported snapshot after a successful send;
+		 * concurrent increments stay pending for later. */
+		spin_lock_bh(&node->visit_info_lock);
+		for (j = 0; j < batch; j++) {
+			info = find_visit_info(node, entries[base + j].app_id);
+			if (!info)
+				continue;
+			if (info->up_bytes >= entries[base + j].up_bytes)
+				info->up_bytes -= entries[base + j].up_bytes;
+			else
+				info->up_bytes = 0;
+			if (info->down_bytes >= entries[base + j].down_bytes)
+				info->down_bytes -= entries[base + j].down_bytes;
+			else
+				info->down_bytes = 0;
+		}
+		node->app_traffic_cursor = entries[base + batch - 1].app_id;
+		spin_unlock_bh(&node->visit_info_lock);
+		base += batch;
+	}
+
+	kfree(entries);
 }
 
 struct client_visit_report {
@@ -455,6 +732,10 @@ static int compare_visit_info_count(const void *a, const void *b)
 	return 0;
 }
 
+/* Keep one normal report per period: splitting it would duplicate terminal
+ * duration accounting in userspace. Eight entries fit the 1024-byte limit. */
+#define VISIT_REPORT_ENTRIES_PER_MSG 8
+
 int __af_visit_info_report(af_client_info_t *node)
 {
 	unsigned char mac_str[32] = {0};
@@ -466,7 +747,7 @@ int __af_visit_info_report(af_client_info_t *node)
 	cJSON *visit_info_array;
 	cJSON *root_obj;
 	char *out;
-	int i, total_count = 0, report_count = 0;
+	int i, ret, total_count = 0, report_count = 0;
 
 	root_obj = cJSON_CreateObject();
 	if (!root_obj)
@@ -511,11 +792,23 @@ int __af_visit_info_report(af_client_info_t *node)
 	if (total_count) {
 		sort(info_array, total_count, sizeof(info_array[0]), compare_visit_info_count, NULL);
 		report_count = total_count > g_max_app_report_count ? g_max_app_report_count : total_count;
+		if (report_count > VISIT_REPORT_ENTRIES_PER_MSG)
+			report_count = VISIT_REPORT_ENTRIES_PER_MSG;
 	}
 	for (i = 0; i < report_count; i++) {
 		visit_obj = cJSON_CreateObject();
 		cJSON_AddNumberToObject(visit_obj, "appid", info_array[i].app_id);
 		cJSON_AddNumberToObject(visit_obj, "latest_action", info_array[i].latest_action);
+		/*
+		 * Drop records transmitted nothing in any mode, so their bytes
+		 * are known zero. Accepted traffic is fully observable through
+		 * the conntrack mark; bypass mode only observes uplink, so its
+		 * accepted records stay unknown rather than reporting 0.
+		 */
+		if (info_array[i].latest_action || af_work_mode != AF_MODE_BYPASS)
+			cJSON_AddTrueToObject(visit_obj, "traffic_known");
+		else
+			cJSON_AddFalseToObject(visit_obj, "traffic_known");
 		cJSON_AddItemToArray(visit_info_array, visit_obj);
 	}
 
@@ -526,11 +819,22 @@ int __af_visit_info_report(af_client_info_t *node)
 		return 0;
 	}
 	cJSON_Minify(out);
-	node->report_count++;
-	af_send_msg_to_user(out, strlen(out));
+	if (strlen(out) >= MAX_FWX_NL_MSG_LEN) {
+		cJSON_Delete(root_obj);
+		kfree(out);
+		return 0;
+	}
+	ret = af_send_msg_to_user(out, strlen(out));
 	cJSON_Delete(root_obj);
-	memset(&node->period_flow, 0x0, sizeof(node->period_flow));
 	kfree(out);
+	if (ret < 0)
+		return 0;
+	node->report_count++;
+	memset(&node->period_flow, 0x0, sizeof(node->period_flow));
+
+	/* Ordered after the normal event so app_traffic is never merged
+	 * before the visit record exists. */
+	af_send_app_traffic_report(node);
 	return 0;
 }
 
@@ -682,7 +986,51 @@ static u_int32_t af_client_hook(unsigned int hook,
 	return NF_ACCEPT;
 }
 
+/* App id from the DPI-identified conntrack mark. Late FORWARD only observes
+ * accepted packets; stale drop flags do not negate these transmitted bytes.
+ * Ignored apps and system app ids below 1001 are not user applications. */
+static int af_traffic_appid_from_ct(struct sk_buff *skb)
+{
+	struct nf_conn *ct = NULL;
+	enum ip_conntrack_info ctinfo;
+	u_int32_t app_id;
 
+	ct = nf_ct_get(skb, &ctinfo);
+	if (!ct)
+		return 0;
+	app_id = fwx_ct_get_appid(ct);
+	if (!fwx_ct_is_valid_appid(app_id) || app_id <= 1000)
+		return 0;
+	if (fwx_ct_test_bit(ct, FWX_CT_IGNORE_BIT))
+		return 0;
+	return (int)app_id;
+}
+
+/* Bypass uplink app id from the forward af_conn tuple captured at
+ * PRE_ROUTING. Callers hold af_conn_lock only around af_conn_find(). */
+static int af_traffic_appid_from_conn(struct sk_buff *skb)
+{
+	flow_info_t flow;
+	af_conn_t *conn;
+	int app_id = 0;
+
+	if (skb->protocol != htons(ETH_P_IP))
+		return 0;
+
+	memset((char *)&flow, 0x0, sizeof(flow_info_t));
+	if (parse_flow_proto(skb, &flow) < 0)
+		return 0;
+
+	spin_lock(&af_conn_lock);
+	conn = af_conn_find(flow.src, flow.dst, flow.sport, flow.dport, flow.l4_protocol);
+	/* Reaching late FORWARD proves this packet was accepted; the cached
+	 * drop action can lag a policy change in the bypass DPI path. */
+	if (conn && !conn->ignore &&
+	    conn->app_id > 1000 && conn->app_id <= 32000)
+		app_id = conn->app_id;
+	spin_unlock(&af_conn_lock);
+	return app_id;
+}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
 static u_int32_t af_client_hook2(void *priv,
@@ -701,15 +1049,13 @@ static u_int32_t af_client_hook2(unsigned int hook,
 	unsigned char smac[ETH_ALEN];
 	af_client_info_t *nfc = NULL;
 	int pkt_dir = 0;
+	int app_id = 0;
+	int is_record_whitelist = 0;
 	struct iphdr *iph = NULL;
 	struct ipv6hdr *ip6h = NULL;
 	enum ip_conntrack_info ctinfo;
 
 	struct nf_conn *ct = nf_ct_get(skb, &ctinfo);
-	if (ct == NULL)
-	{
-		return NF_ACCEPT;
-	}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
 	if (!skb->dev)
@@ -728,34 +1074,84 @@ static u_int32_t af_client_hook2(unsigned int hook,
 	{
 		return NF_ACCEPT;
 	}
-
-
-	if (PKT_DIR_DOWN != pkt_dir)
+	/* Bypass DPI uses its own flow table, including NOTRACK uplinks.
+	 * Keep the existing conntrack requirement for gateway/bridge and
+	 * downstream client totals. */
+	if (!ct && (af_work_mode != AF_MODE_BYPASS || pkt_dir != PKT_DIR_UP))
 		return NF_ACCEPT;
 
-	AF_CLIENT_LOCK_R();
-	
-	if (skb->protocol == htons(ETH_P_IP)) {
-		iph = ip_hdr(skb);
-		nfc = find_af_client_by_ip(iph->daddr);
+
+	if (PKT_DIR_UP == pkt_dir)
+	{
+		/*
+		 * Uplink per-app accounting only: client flow totals for this
+		 * direction are already counted in af_client_hook at FIRST+1.
+		 * The client was just created there for this same packet.
+		 */
+		if (skb->protocol == htons(ETH_P_IPV6) && AF_MODE_GATEWAY != af_work_mode)
+			return NF_ACCEPT;
+		ethhdr = eth_hdr(skb);
+		if (ethhdr)
+			memcpy(smac, ethhdr->h_source, ETH_ALEN);
+		else
+			memcpy(smac, &skb->cb[40], ETH_ALEN);
+
+		AF_CLIENT_LOCK_R();
+		nfc = find_af_client(smac);
+		if (nfc) {
+			nfc->update_jiffies = jiffies;
+			is_record_whitelist = nfc->record_whitelist;
+		}
+		AF_CLIENT_UNLOCK_R();
 	}
-	else if (skb->protocol == htons(ETH_P_IPV6)) {
-		ip6h = ipv6_hdr(skb);
-		nfc = find_af_client_by_ipv6(&ip6h->daddr);
+	else
+	{
+		AF_CLIENT_LOCK_R();
+
+		if (skb->protocol == htons(ETH_P_IP)) {
+			iph = ip_hdr(skb);
+			nfc = find_af_client_by_ip(iph->daddr);
+		}
+		else if (skb->protocol == htons(ETH_P_IPV6)) {
+			ip6h = ipv6_hdr(skb);
+			nfc = find_af_client_by_ipv6(&ip6h->daddr);
+			if (nfc){
+				AF_LMT_DEBUG("found ipv6 %pI6 client\n", &ip6h->daddr);
+			}
+			else{
+				AF_LMT_DEBUG("not found ipv6 %pI6 client\n", &ip6h->daddr);
+			}
+		}
 		if (nfc){
-			AF_LMT_DEBUG("found ipv6 %pI6 client\n", &ip6h->daddr);
+			/* Legacy downlink client totals were registered only from 4.16. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
+			nfc->flow.down_bytes += skb->len;
+			nfc->flow.down_pkts++;
+#endif
+			nfc->update_jiffies = jiffies;
+			is_record_whitelist = nfc->record_whitelist;
 		}
-		else{
-			AF_LMT_DEBUG("not found ipv6 %pI6 client\n", &ip6h->daddr);
-		}
-	}
-	if (nfc){
-		nfc->flow.down_bytes += skb->len;
-		nfc->flow.down_pkts++;
-		nfc->update_jiffies = jiffies;  
+
+		AF_CLIENT_UNLOCK_R();
 	}
 
-	AF_CLIENT_UNLOCK_R();
+	if (!nfc || is_record_whitelist || !g_record_enable)
+		return NF_ACCEPT;
+
+	/*
+	 * Gateway/bridge: the conntrack mark carries the DPI-identified app id
+	 * for both directions of the flow. Bypass mode never populates the
+	 * ct mark; only its observable uplink flow can be resolved through
+	 * the forward af_conn tuple, so no downlink bytes are fabricated.
+	 */
+	if (AF_MODE_BYPASS == af_work_mode)
+		app_id = (PKT_DIR_UP == pkt_dir) ? af_traffic_appid_from_conn(skb) : 0;
+	else
+		app_id = af_traffic_appid_from_ct(skb);
+
+	if (app_id > 0)
+		af_record_app_traffic(nfc, app_id, pkt_dir, skb->len);
+
 	return NF_ACCEPT;
 }
 
@@ -794,6 +1190,24 @@ static struct nf_hook_ops af_client_ops[] = {
 		.pf = NFPROTO_IPV6,
 		.hooknum = NF_INET_FORWARD,
 		.priority = NF_IP_PRI_FIRST + 1,
+	},
+	{
+		.hook = af_client_hook2,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 4, 0)
+		.owner = THIS_MODULE,
+#endif
+		.pf = NFPROTO_IPV4,
+		.hooknum = NF_INET_FORWARD,
+		.priority = NF_IP_PRI_LAST - 1,
+	},
+	{
+		.hook = af_client_hook2,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 4, 0)
+		.owner = THIS_MODULE,
+#endif
+		.pf = NFPROTO_IPV6,
+		.hooknum = NF_INET_FORWARD,
+		.priority = NF_IP_PRI_LAST - 1,
 	},
 };
 #endif
