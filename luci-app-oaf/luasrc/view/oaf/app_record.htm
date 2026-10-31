@@ -5,9 +5,10 @@
 
 <div style="padding: 8px;">
     <div class="cbi-section">
-        <ul class="tab-list">
-            <li class="tab-item active" data-tab="online-records"><%:Online Records%></li>
-            <li class="tab-item" data-tab="history-records"><%:History Records%></li>
+        <ul class="tab-list" role="tablist">
+            <li class="tab-item active" role="tab" tabindex="0" aria-selected="true" aria-controls="tab-online-records" data-tab="online-records"><%:Online Records%></li>
+            <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-history-records" data-tab="history-records"><%:History Records%></li>
+            <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-traffic-stats" data-tab="traffic-stats"><%:App Traffic Statistics%></li>
         </ul>
 
         <div class="record-traffic-hint"><%:Only observed forwarded traffic after app identification is counted. Unavailable data is shown as —; bypass downstream traffic may be unavailable.%></div>
@@ -106,6 +107,44 @@
             </div>
             <div class="record-sentinel" id="history-record-sentinel" aria-hidden="true"></div>
         </div>
+        <div id="tab-traffic-stats" class="tab-body">
+            <div class="traffic-stats-controls">
+                <label for="q-traffic-start"><%:Start time%></label>
+                <input id="q-traffic-start" class="cbi-input-text" type="datetime-local" step="1" style="width:210px;">
+                <label for="q-traffic-end"><%:End time%></label>
+                <input id="q-traffic-end" class="cbi-input-text" type="datetime-local" step="1" style="width:210px;">
+                <button type="button" class="cbi-button cbi-button-action" id="btn-traffic-stats-search"><%:Search%></button>
+                <button type="button" class="cbi-button" id="btn-traffic-stats-reset"><%:Reset%></button>
+            </div>
+            <div class="traffic-stats-hint"><%:Overlapping visits are counted in full; values are not exact for the selected time range.%></div>
+            <div class="traffic-stats-hint"><%:A dash means that at least one selected visit has unknown traffic in that direction; it is not zero.%></div>
+            <div class="traffic-stats-hint" id="traffic-stats-range"></div>
+            <div class="record-table-scroll">
+            <table class="table cbi-section-table" id="traffic-stats-table" style="table-layout: fixed; width: 100%;">
+                <colgroup>
+                    <col class="traffic-stats-app-col">
+                    <col class="traffic-stats-traffic-col">
+                    <col class="traffic-stats-traffic-col">
+                    <col class="traffic-stats-traffic-col">
+                    <col class="traffic-stats-count-col">
+                </colgroup>
+                <tr class="tr table-titles">
+                    <th class="th"><%:App%></th>
+                    <th class="th record-traffic-cell"><%:Upstream Traffic%></th>
+                    <th class="th record-traffic-cell"><%:Downstream Traffic%></th>
+                    <th class="th record-traffic-cell"><%:Total Traffic%></th>
+                    <th class="th"><%:Visits%></th>
+                </tr>
+                <tr class="tr">
+                    <td class="td" colspan="5"><em><br /><%:No Data%></em></td>
+                </tr>
+            </table>
+            </div>
+            <div class="record-load-state" id="traffic-stats-state" aria-live="polite">
+                <span class="record-loading" style="display:none;"><%:Loading...%></span>
+                <span class="record-error" style="display:none;"><span id="traffic-stats-error-message"><%:Load failed%></span> <button type="button" class="cbi-button" id="btn-traffic-stats-retry"><%:Refresh%></button></span>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -126,6 +165,10 @@
     margin-right: 2px;
     background-color: var(--background-color-low, #f5f5f5);
     color: var(--text-color-medium, #6b7280);
+}
+.tab-item:focus-visible {
+    outline: 2px solid var(--focus-color, #2563eb);
+    outline-offset: 1px;
 }
 .tab-item.active {
     font-weight: bold;
@@ -241,6 +284,36 @@
     color: var(--text-color-medium, #6b7280);
     font-size: 0.9em;
 }
+.traffic-stats-controls {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin: 10px 0 8px 0;
+}
+.traffic-stats-controls label {
+    color: var(--text-color-medium, #6b7280);
+}
+.traffic-stats-hint {
+    margin: 6px 0;
+    color: var(--text-color-medium, #6b7280);
+    font-size: 0.9em;
+}
+#traffic-stats-table .th,
+#traffic-stats-table .td {
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+#traffic-stats-table {
+    min-width: 700px;
+    --record-app-col-width: 230px;
+    --record-app-cell-padding: 14px;
+    --record-app-icon-size: 22px;
+    --record-app-icon-gap: 7px;
+}
+#traffic-stats-table .traffic-stats-app-col { width: var(--record-app-col-width); }
+#traffic-stats-table .traffic-stats-traffic-col { width: 18%; }
+#traffic-stats-table .traffic-stats-count-col { width: 12%; }
 </style>
 
 <script type="text/javascript">
@@ -251,7 +324,12 @@
         unfiltered: '<%:Unfiltered%>',
         online: '<%:Online%>',
         offline: '<%:Offline%>',
-        noData: '<%:No Data%>'
+        noData: '<%:No Data%>',
+        invalidRange: '<%:Start time must not be later than end time.%>',
+        invalidTime: '<%:Please enter a valid time range.%>',
+        rangePrefix: '<%:Range%>',
+        wholeVisit: '<%:Whole overlapping visits are counted.%>',
+        unknownTraffic: '<%:Unknown traffic is not zero.%>'
     };
     function record_state(table, status, sentinel, url) {
         return {
@@ -265,6 +343,16 @@
         "<%=url('admin/services/oaf/api/app_record/get_active_app_records')%>");
     var history_state = record_state('history-record-table', 'history-record-state', 'history-record-sentinel',
         "<%=url('admin/services/oaf/api/app_record/get_app_history_records')%>");
+    var traffic_stats_state = {
+        url: "<%=url('admin/services/oaf/api/app_record/get_app_traffic_stats')%>",
+        table: 'traffic-stats-table',
+        status: 'traffic-stats-state',
+        loading: false,
+        error: false,
+        started: false,
+        serial: 0,
+        xhr: null
+    };
     var active_tab = 'online-records';
     var visible_frame = null;
 
@@ -315,10 +403,172 @@
 
     function get_ts_from_input(selector) {
         var v = $(selector).val();
-        if (!v) return 0;
-        var ms = new Date(v).getTime();
-        if (!ms || ms < 0) return 0;
+        var ms;
+        if (!v) return null;
+        ms = new Date(v).getTime();
+        if (!isFinite(ms) || ms < 0 || ms > 4294967295000) return null;
         return Math.floor(ms / 1000);
+    }
+
+    function local_datetime_value(date) {
+        return date.getFullYear() + "-" + pad2(date.getMonth() + 1) + "-" + pad2(date.getDate())
+            + "T" + pad2(date.getHours()) + ":" + pad2(date.getMinutes()) + ":" + pad2(date.getSeconds());
+    }
+
+    function set_default_traffic_range() {
+        var now = new Date();
+        var start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        var end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+        $('#q-traffic-start').val(local_datetime_value(start));
+        $('#q-traffic-end').val(local_datetime_value(end));
+    }
+
+    function traffic_stats_filters() {
+        var start_value = $('#q-traffic-start').val();
+        var end_value = $('#q-traffic-end').val();
+        var start_ms = start_value ? new Date(start_value).getTime() : null;
+        var end_ms = end_value ? new Date(end_value).getTime() : null;
+        var filters = {};
+        if ((start_value && (!isFinite(start_ms) || start_ms < 0 || start_ms > 4294967295000)) ||
+            (end_value && (!isFinite(end_ms) || end_ms < 0 || end_ms > 4294967295000))) {
+            return { error: text.invalidTime };
+        }
+        if (start_value && end_value && start_ms > end_ms)
+            return { error: text.invalidRange };
+        if (start_value)
+            filters.start_time = Math.floor(start_ms / 1000);
+        if (end_value)
+            filters.end_time = Math.floor(end_ms / 1000);
+        return filters;
+    }
+
+    function traffic_stats_clear_rows() {
+        $('#' + traffic_stats_state.table).find('tr:gt(0)').remove();
+    }
+
+    function set_traffic_stats_state(kind, message) {
+        var $status = $('#' + traffic_stats_state.status);
+        $status.find('.record-loading').toggle(kind === 'loading');
+        $status.find('.record-error').toggle(kind === 'error');
+        if (message)
+            $('#traffic-stats-error-message').text(message);
+    }
+
+    function set_traffic_stats_controls_disabled(disabled) {
+        $('#q-traffic-start, #q-traffic-end, #btn-traffic-stats-search, #btn-traffic-stats-reset, #btn-traffic-stats-retry')
+            .prop('disabled', !!disabled);
+    }
+
+    function render_traffic_stats(list) {
+        var $table = $('#' + traffic_stats_state.table);
+        var fragment;
+        traffic_stats_clear_rows();
+        if (!list.length) {
+            $table.append($('<tr>').addClass('tr').append(
+                $('<td>').addClass('td').attr('colspan', 5).append(
+                    $('<em>').append($('<br>')).append(document.createTextNode(text.noData))
+                )
+            ));
+            return;
+        }
+        fragment = document.createDocumentFragment();
+        list.forEach(function(item) {
+            var app_id = item.appid == null ? '' : item.appid;
+            var app_name = app_display_name(app_id, item.name || '');
+            var $row = $('<tr>').addClass('tr');
+            var $app_cell = $('<td>').addClass('td record-app-td');
+            var $up_cell = $('<td>').addClass('td record-traffic-cell')
+                .text(format_record_traffic(item.up_bytes));
+            var $down_cell = $('<td>').addClass('td record-traffic-cell')
+                .text(format_record_traffic(item.down_bytes));
+            var $total_cell = $('<td>').addClass('td record-traffic-cell')
+                .text(format_record_traffic(item.total_bytes));
+            render_app_cell($app_cell, app_id, app_name, item.icon);
+            if (Number(item.unknown_up_count || 0) > 0)
+                $up_cell.attr('title', text.unknownTraffic);
+            if (Number(item.unknown_down_count || 0) > 0)
+                $down_cell.attr('title', text.unknownTraffic);
+            if (Number(item.unknown_up_count || 0) > 0 || Number(item.unknown_down_count || 0) > 0)
+                $total_cell.attr('title', text.unknownTraffic);
+            $row.append($app_cell)
+                .append($up_cell)
+                .append($down_cell)
+                .append($total_cell)
+                .append($('<td>').addClass('td').text(item.record_count == null ? '—' : item.record_count));
+            fragment.appendChild($row[0]);
+        });
+        $table.append(fragment);
+    }
+
+    function update_traffic_stats_range(resp) {
+        var range = resp && resp.range ? resp.range : resp;
+        var has_start = range && Object.prototype.hasOwnProperty.call(range, 'start_time');
+        var has_end = range && Object.prototype.hasOwnProperty.call(range, 'end_time');
+        var start = has_start ? Number(range.start_time) : 0;
+        var end = has_end ? Number(range.end_time) : 0;
+        var start_text = has_start && isFinite(start) && start >= 0
+            ? local_datetime_value(new Date(start * 1000)).replace('T', ' ') : '<%:Any time%>';
+        var end_text = has_end && isFinite(end) && end >= 0
+            ? local_datetime_value(new Date(end * 1000)).replace('T', ' ') : '<%:Any time%>';
+        $('#traffic-stats-range').text(text.rangePrefix + ': ' + start_text + ' - ' + end_text + ' (' + text.wholeVisit + ')');
+    }
+
+    function fail_traffic_stats(message) {
+        traffic_stats_state.error = true;
+        set_traffic_stats_state('error', message || '<%:Load failed%>');
+    }
+
+    function request_traffic_stats() {
+        var filters = traffic_stats_filters();
+        var serial;
+        traffic_stats_state.started = true;
+        ++traffic_stats_state.serial;
+        serial = traffic_stats_state.serial;
+        if (traffic_stats_state.xhr)
+            traffic_stats_state.xhr.abort();
+        traffic_stats_state.xhr = null;
+        traffic_stats_state.loading = false;
+        traffic_stats_state.error = false;
+        traffic_stats_clear_rows();
+        $('#traffic-stats-range').empty();
+        set_traffic_stats_state('idle');
+        if (filters.error) {
+            set_traffic_stats_controls_disabled(false);
+            fail_traffic_stats(filters.error);
+            return;
+        }
+        update_traffic_stats_range(filters);
+        traffic_stats_state.loading = true;
+        set_traffic_stats_controls_disabled(true);
+        set_traffic_stats_state('loading');
+        traffic_stats_state.xhr = $.ajax({
+            url: traffic_stats_state.url,
+            data: filters,
+            dataType: 'json',
+            timeout: 15000
+        }).done(function(resp) {
+            var list;
+            if (serial !== traffic_stats_state.serial)
+                return;
+            list = resp && resp.apps;
+            if (!resp || !Array.isArray(list)) {
+                fail_traffic_stats('<%:Load failed%>');
+                return;
+            }
+            render_traffic_stats(list);
+            update_traffic_stats_range(filters);
+            traffic_stats_state.error = false;
+            set_traffic_stats_state('idle');
+        }).fail(function() {
+            if (serial === traffic_stats_state.serial)
+                fail_traffic_stats('<%:Load failed%>');
+        }).always(function() {
+            if (serial !== traffic_stats_state.serial)
+                return;
+            traffic_stats_state.loading = false;
+            traffic_stats_state.xhr = null;
+            set_traffic_stats_controls_disabled(false);
+        });
     }
 
     function render_filter_status(act) {
@@ -497,6 +747,7 @@
 
     function check_visible_batch() {
         visible_frame = null;
+        if (active_tab === 'traffic-stats') return;
         var state = active_tab === 'history-records' ? history_state : online_state;
         if (!state.started || state.loading || state.done || state.error || document.hidden) return;
         var sentinel = document.getElementById(state.sentinel);
@@ -507,11 +758,14 @@
     }
 
     function history_filters() {
-        return {
-            mac: $('#q-history-mac').val() || '',
-            start_time: get_ts_from_input('#q-history-start'),
-            end_time: get_ts_from_input('#q-history-end')
-        };
+        var filters = { mac: $('#q-history-mac').val() || '' };
+        var start_time = get_ts_from_input('#q-history-start');
+        var end_time = get_ts_from_input('#q-history-end');
+        if (start_time !== null)
+            filters.start_time = start_time;
+        if (end_time !== null)
+            filters.end_time = end_time;
+        return filters;
     }
 
     function reset_history_records() {
@@ -532,12 +786,19 @@
     }
 
     function switch_tab(tab_id) {
-        if (tab_id !== 'online-records' && tab_id !== 'history-records') return;
+        if (tab_id !== 'online-records' && tab_id !== 'history-records' && tab_id !== 'traffic-stats') return;
         active_tab = tab_id;
-        $('.tab-item').removeClass('active');
-        $('.tab-item[data-tab="' + tab_id + '"]').addClass('active');
+        $('.tab-item').removeClass('active').attr('aria-selected', 'false');
+        $('.tab-item[data-tab="' + tab_id + '"]').addClass('active').attr('aria-selected', 'true');
         $('.tab-body').removeClass('active');
         $('#tab-' + tab_id).addClass('active');
+        if (tab_id === 'traffic-stats') {
+            if (!traffic_stats_state.started) {
+                set_default_traffic_range();
+                request_traffic_stats();
+            }
+            return;
+        }
         var state = tab_id === 'history-records' ? history_state : online_state;
         if (!state.started) {
             state.started = true;
@@ -551,11 +812,24 @@
 
     $('.tab-item').on('click', function() {
         switch_tab($(this).attr('data-tab'));
+    }).on('keydown', function(event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        switch_tab($(this).attr('data-tab'));
     });
     $('#btn-history-search').on('click', reset_history_records);
     $('#btn-history-reset').on('click', function() {
         $('#q-history-mac, #q-history-start, #q-history-end').val('');
         reset_history_records();
+    });
+    $('#btn-traffic-stats-search').on('click', request_traffic_stats);
+    $('#btn-traffic-stats-reset').on('click', function() {
+        set_default_traffic_range();
+        request_traffic_stats();
+    });
+    $('#btn-traffic-stats-retry').on('click', function() {
+        if (traffic_stats_state.error)
+            request_traffic_stats();
     });
     $('.record-retry').on('click', function() {
         var state = $(this).closest('.record-load-state').attr('id') === online_state.status
@@ -577,8 +851,11 @@
     $(window).on('resize.appRecords orientationchange.appRecords', queue_visible_batch);
     $(document).on('visibilitychange.appRecords', queue_visible_batch);
 
+    set_default_traffic_range();
     var urlParams = new URLSearchParams(window.location.search);
-    switch_tab(urlParams.get('tab') === 'history' ? 'history-records' : 'online-records');
+    var initial_tab = urlParams.get('tab');
+    switch_tab(initial_tab === 'history' ? 'history-records'
+        : (initial_tab === 'traffic' ? 'traffic-stats' : 'online-records'));
 })();
 //]]>
 </script>

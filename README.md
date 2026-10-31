@@ -28,6 +28,8 @@ Each app-traffic datagram contains at most eight applications and remains below 
 Per-app traffic reporting honors the existing HTTP minimum connection-count threshold without inheriting the normal activity report's top-N limit; pending bytes are retained until the threshold is met or the existing retention window expires.
 Per-app reports also follow the existing local-midnight suppression window: messages received in the first 120 seconds of each day are discarded. Their byte increments are not replayed; a successful kernel send has already consumed them, and this protocol has no userspace acknowledgement.
 
+The application-records page adds an App Traffic Statistics tab with a selectable time range. It aggregates complete visits whose intervals overlap the range, including active visits; it does not split a visit at the range boundaries. A dash means that at least one selected visit has unknown traffic in that direction, not zero. The result is therefore an overlap-based whole-visit aggregate, not exact traffic observed strictly inside the selected window.
+
 ### LuCI built-in feature details
 
 On the feature library's Basic Info tab, hover an application icon/name or focus its entry to inspect the current feature library's raw matching rules. Entries load their rules on demand from the service and cache them for the open page; the existing custom-application editor is unchanged. This requires deploying both the updated LuCI app and a rebuilt `open-app-filter` service (`oafd`): older services have no `get_builtin_feature` API. Updating LuCI files alone cannot show built-in rules. The installed `feature.bin` need not be rebuilt.

@@ -6,32 +6,93 @@
 
 <script type="text/javascript">//<![CDATA[
 	const FWX_ECHART_RENDERER = 'svg';
-	let visit_time_data = [];
-	let visit_list_data = {};
-	let visit_cur_page = 1;
-	let visit_page_size = 15;
-	let visit_total_num = 0;
-	let visit_total_page = 1;
-	let hourlyTrafficChart = null;
-	let hourlyAppsChart = null;
-	let hourlyStatsData = null;
-	let appTimeChart = null;
-	let visit_refresh_timer = null;
-	let visit_refresh_inflight = false;
-	let current_nickname = '';
-	let nickname_editing = false;
-	let nickname_submitting = false;
-	let nickname_composing = false;
-	let nickname_submit_pending = false;
-	const behavior_weekday_labels = {
-		0: '<%:Sun%>',
-		1: '<%:Mon%>',
-		2: '<%:Tue%>',
-		3: '<%:Wed%>',
-		4: '<%:Thu%>',
-		5: '<%:Fri%>',
-		6: '<%:Sat%>'
-	};
+    let visit_time_data = [];
+    let visit_page_size = 15;
+    let visit_records_state = {
+        nextPage: 1,
+        loadedPages: 0,
+        records: [],
+        seen: Object.create(null),
+        errorMode: 'page',
+        refreshPending: false,
+        pagePending: false,
+        refreshCycle: null,
+        refreshing: false,
+        serial: 0,
+        xhr: null
+    };
+    let visit_load_frame = null;
+    let visit_sentinel_observer = null;
+    let visit_loader_initialized = false;
+    let hourlyTrafficChart = null;
+    let hourlyAppsChart = null;
+    let hourlyStatsData = null;
+    let appTimeChart = null;
+    let visit_refresh_timer = null;
+    let current_nickname = '';
+    let current_hostname = '';
+    let nickname_editing = false;
+    let nickname_submitting = false;
+    let nickname_composing = false;
+    let nickname_submit_pending = false;
+    const behavior_weekday_labels = {
+        0: '<%:Sun%>',
+        1: '<%:Mon%>',
+        2: '<%:Tue%>',
+        3: '<%:Wed%>',
+        4: '<%:Thu%>',
+        5: '<%:Fri%>',
+        6: '<%:Sat%>'
+    };
+    function normalize_device_title_value(value) {
+        var text = value === null || typeof value === 'undefined' ? '' : String(value).trim();
+        return text && text !== '--' && text !== '*' ? text : '';
+    }
+
+    function updateDeviceTitle(nickname, hostname, deviceMac) {
+        var nicknameText = normalize_device_title_value(nickname);
+        var hostnameText = normalize_device_title_value(hostname);
+        var macText = normalize_device_title_value(deviceMac) || normalize_device_title_value(mac);
+        var displayName = nicknameText || hostnameText || macText || pageTitle;
+        var hasDistinctName = !!(nicknameText || hostnameText) && !!macText;
+        var titleName = document.getElementById('device-title-name');
+        var titleMac = document.getElementById('device-title-mac');
+        var titleSeparator = document.getElementById('device-title-separator');
+
+        if (titleName) titleName.textContent = displayName;
+        if (titleMac) titleMac.textContent = macText || '--';
+        if (titleSeparator) titleSeparator.textContent = hasDistinctName ? ' (' + macText + ')' : '';
+        document.title = hasDistinctName ? displayName + ' - ' + macText : displayName;
+    }
+
+    var pageTitle = '<%:User Detail%>';
+    let basic_info_valid = false;
+    let basic_info_data = null;
+    let basic_info_request_generation = 0;
+
+    function normalize_basic_info_mac(value) {
+        var text = value === null || typeof value === 'undefined' ? '' : String(value).trim();
+        if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(text)) return '';
+        return text.toLowerCase();
+    }
+
+    function get_valid_user_basic_info(data) {
+        var user = data;
+        var responseMac;
+        var expectedMac;
+
+        if (!user || typeof user !== 'object' || Array.isArray(user)) return null;
+        if (user.code === 2000 && user.data && typeof user.data === 'object') user = user.data;
+        responseMac = normalize_basic_info_mac(user.mac);
+        expectedMac = normalize_basic_info_mac(mac);
+        if (!responseMac || (expectedMac && responseMac !== expectedMac)) return null;
+        return user;
+    }
+
+    function set_basic_info_error(visible) {
+        var errorEl = document.getElementById('basic_info_load_error');
+        if (errorEl) errorEl.style.display = visible ? '' : 'none';
+    }
 
 	function nickname_log(msg, extra) {
 		if (typeof console === 'undefined' || !console.log) return;
@@ -49,33 +110,50 @@
 		return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
 	}
 	
-	var mac = getUrlParameter('mac');
-	if (!mac) {
-		var pathParts = window.location.pathname.split('/');
-		var macIndex = pathParts.indexOf('detail');
-		if (macIndex >= 0 && pathParts.length > macIndex + 1) {
-			mac = pathParts[macIndex + 1];
-		}
-	}
-	
-	if (!mac) {
-		document.addEventListener('DOMContentLoaded', function() {
-			var errorDiv = document.createElement('div');
-			errorDiv.style.cssText = 'padding: 20px; text-align: center;';
-			var backUrl = '<%=url("admin/services/oaf/users/list")%>';
-			errorDiv.innerHTML = '<h3><%:Missing MAC parameter%></h3><p><a href="' + backUrl + '"><%:Back to User List%></a></p>';
-			document.body.appendChild(errorDiv);
-		});
-	} else {
-		var pageTitle = '<%:User Detail%>';
-		document.title = pageTitle + ' - ' + mac;
-		
-		if (document.readyState === 'loading') {
-			document.addEventListener('DOMContentLoaded', loadUserDetailData);
-		} else {
-			loadUserDetailData();
-		}
-	}
+
+    function getUrlParameter(name) {
+        name = name.replace(/[\[]/, '\[').replace(/[\]]/, '\]');
+        var regex = new RegExp('[\?&]' + name + '=([^&#]*)');
+        var results = regex.exec(location.search);
+        if (results === null) return '';
+        try {
+            return decodeURIComponent(results[1].replace(/\+/g, ' '));
+        } catch (e) {
+            return '';
+        }
+    }
+
+    var mac = getUrlParameter('mac');
+    if (!mac) {
+        var pathParts = window.location.pathname.split('/');
+        var macIndex = pathParts.indexOf('detail');
+        if (macIndex >= 0 && pathParts.length > macIndex + 1) {
+            try {
+                mac = decodeURIComponent(pathParts[macIndex + 1]);
+            } catch (e) {
+                mac = '';
+            }
+        }
+    }
+    mac = normalize_basic_info_mac(mac);
+
+    if (!mac) {
+        document.addEventListener('DOMContentLoaded', function() {
+            var errorDiv = document.createElement('div');
+            errorDiv.style.cssText = 'padding: 20px; text-align: center;';
+            var backUrl = '<%=url("admin/services/oaf/users/list")%>';
+            errorDiv.innerHTML = '<h3><%:Missing MAC parameter%></h3><p><a href="' + backUrl + '"><%:Back to User List%></a></p>';
+            document.body.appendChild(errorDiv);
+        });
+    } else {
+        document.title = pageTitle + ' - ' + mac;
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', loadUserDetailData);
+        } else {
+            loadUserDetailData();
+        }
+    }
 	
 	function loadUserDetailData() {
 		if (!mac) return;
@@ -92,24 +170,38 @@
 			} else if (tabId === 'tab-behavior-rules') {
 				loadBehaviorRules();
 			} else if (tabId === 'tab-visit-records') {
-				loadVisitListData(visit_cur_page);
+                loadVisitListData();
 			}
 		}
 	}
 	
-	function loadUserBasicInfo() {
-		if (!mac) return;
-		new XHR().get("<%=url('admin/services/oaf/api/get_user_basic_info')%>/" + mac, null,
-			function (x, data) {
-				if (data && data.mac) {
-					render_user_basic_info(data);
-				}
-			}
-		);
-	}
+    function loadUserBasicInfo() {
+        var user;
+        if (!mac) return;
+        var requestGeneration = ++basic_info_request_generation;
+        new XHR().get("<%=url('admin/services/oaf/api/get_user_basic_info')%>/" + encodeURIComponent(mac), null,
+            function (x, data) {
+                if (requestGeneration !== basic_info_request_generation) return;
+                user = get_valid_user_basic_info(data);
+                if (!user) {
+                    basic_info_valid = false;
+                    set_basic_info_error(true);
+                    if (typeof console !== 'undefined' && console.error)
+                        console.error('[fwx-user-detail] basic info response is invalid');
+                    return;
+                }
+                basic_info_data = $.extend({}, basic_info_data || {}, user);
+                if (render_user_basic_info(basic_info_data)) {
+                    basic_info_valid = true;
+                    set_basic_info_error(false);
+                }
+            }
+        );
+    }
 	
-	function render_user_basic_info(user) {
-		if (!user) return;
+    function render_user_basic_info(user) {
+        user = get_valid_user_basic_info(user);
+        if (!user) return false;
 		
 		document.getElementById('basic_info_mac').textContent = user.mac || '--';
 		document.getElementById('basic_info_ip').textContent = user.ip || '--';
@@ -118,9 +210,11 @@
 			ipv6 = '--';
 		}
 		document.getElementById('basic_info_ipv6').textContent = ipv6;
-		current_nickname = (user.nickname || '').trim();
-		renderNicknameView(current_nickname);
-		document.getElementById('basic_info_hostname').textContent = user.hostname || '--';
+        current_nickname = (user.nickname || '').trim();
+        current_hostname = (user.hostname || '').trim();
+        renderNicknameView(current_nickname);
+        document.getElementById('basic_info_hostname').textContent = user.hostname || '--';
+        updateDeviceTitle(current_nickname, current_hostname, user.mac || mac);
 		
 		var todayOnlineTime = user.today_online_time || 0;
 		document.getElementById('basic_info_online_time').textContent = get_display_time(todayOnlineTime);
@@ -147,6 +241,7 @@
 		} else {
 			statusElement.textContent = '<%:Offline%>';
 		}
+        return true;
 	}
 
 	function validateNickname(nickname) {
@@ -374,9 +469,10 @@
 			nickname_submit_pending = false;
 
 			if (ok) {
-				current_nickname = nickname;
-				renderNicknameView(current_nickname);
-				showNicknameToast('<%:Remark updated successfully%>', false);
+                current_nickname = nickname;
+                renderNicknameView(current_nickname);
+                updateDeviceTitle(current_nickname, current_hostname, mac);
+                showNicknameToast('<%:Remark updated successfully%>', false);
 			} else {
 				renderNicknameView(current_nickname);
 				showNicknameToast('<%:Failed to update remark%>', true);
@@ -391,7 +487,7 @@
 		if (!isVisible) {
 			return;
 		}
-		new XHR().get("<%=url('admin/services/oaf/api/dev_visit_time')%>/" + mac, null,
+        new XHR().get("<%=url('admin/services/oaf/api/dev_visit_time')%>/" + encodeURIComponent(mac), null,
 			function (x, st) {
 				visit_time_data = st;
 				display_app_visit_view(visit_time_data);
@@ -399,25 +495,32 @@
 		);
 	}
 
-	function startVisitAutoRefresh() {
-		if (visit_refresh_timer) return;
-		visit_refresh_timer = window.setInterval(function () {
-			var tabVisitRecords = document.getElementById('tab-visit-records');
-			if (!tabVisitRecords || !tabVisitRecords.classList.contains('active')) return;
-			if (visit_refresh_inflight) return;
-			visit_refresh_inflight = true;
-			loadVisitListData(visit_cur_page, function () {
-				visit_refresh_inflight = false;
-			});
-		}, 3000);
-	}
+    function isVisitRecordsTabActive() {
+        var tab = document.getElementById('tab-visit-records');
+        return !!(tab && tab.classList.contains('active'));
+    }
 
-	function stopVisitAutoRefresh() {
-		if (!visit_refresh_timer) return;
-		window.clearInterval(visit_refresh_timer);
-		visit_refresh_timer = null;
-		visit_refresh_inflight = false;
-	}
+    function startVisitAutoRefresh() {
+        if (visit_refresh_timer) return;
+        visit_refresh_timer = window.setInterval(function () {
+            var state = visit_records_state;
+            if (!isVisitRecordsTabActive() || document.hidden || state.error) return;
+            if (state.refreshCycle || state.refreshPending) return;
+            if (state.loading) {
+                state.refreshPending = true;
+                return;
+            }
+            refreshVisitRecords();
+        }, 3000);
+    }
+
+    function stopVisitAutoRefresh() {
+        if (visit_refresh_timer) {
+            window.clearInterval(visit_refresh_timer);
+            visit_refresh_timer = null;
+        }
+        visit_records_state.refreshPending = false;
+    }
 	
 	function loadOnlineOfflineRecords() {
 		if (!mac) return;
@@ -489,7 +592,7 @@
 		if (!isVisible) {
 			return;
 		}
-		new XHR().get("<%=url('admin/services/oaf/api/get_hourly_stats')%>/" + mac, null,
+        new XHR().get("<%=url('admin/services/oaf/api/get_hourly_stats')%>/" + encodeURIComponent(mac), null,
 			function (x, st) {
 				if (st && st.hourly_stats) {
 					hourlyStatsData = st.hourly_stats;
@@ -696,183 +799,530 @@
 		appTimeChart.setOption(option);
 	}
 
-	function loadVisitListData(page) {
-		if (!mac) return;
-		var url = "<%=url('admin/services/oaf/api/dev_visit_list')%>/" + mac + "?page=" + page + "&page_size=" + visit_page_size;
-		var cb = arguments.length > 1 ? arguments[1] : null;
-		new XHR().get(url, null,
-			function (x, st) {
-				visit_list_data = st;
-				visit_total_num = st.total_num || 0;
-				visit_total_page = st.total_page || 1;
-				visit_cur_page = st.page || 1;
-				render_visit_list_table(visit_list_data);
-				render_visit_pagination();
-				if (typeof cb === 'function') cb();
-			}
-		);
-	}
+    function set_visit_load_state(kind) {
+        var status = document.getElementById('visit-load-state');
+        if (!status) return;
+        var loading = status.querySelector('.visit-loading');
+        var error = status.querySelector('.visit-error');
+        if (loading) loading.style.display = kind === 'loading' ? '' : 'none';
+        if (error) error.style.display = kind === 'error' ? '' : 'none';
+    }
 
-	function render_visit_list_table(data) {
-		var tb = document.getElementById('visit_list_table');
-		var visit_list = (data && Array.isArray(data.list)) ? data.list : [];
-		if (tb) {
-			while (tb.rows.length > 1) {
-				tb.deleteRow(1);
-			}
-			if (visit_list.length === 0) {
-				var emptyTr = tb.insertRow(-1);
-				emptyTr.className = 'tr';
-				var emptyTd = emptyTr.insertCell(-1);
-				emptyTd.className = 'td';
-				emptyTd.colSpan = 9;
-				emptyTd.style.textAlign = 'center';
-				emptyTd.innerHTML = '<%:No records%>';
-				return;
-			}
-			for (var i = 0; i < visit_list.length; i++) {
-				var action_status = visit_list[i].act == 1
-                    ? '<span class="detail-status-negative"><%:Filtered%></span>'
-                    : '<span class="detail-status-positive"><%:Unfiltered%></span>';
-				var hostname = visit_list[i].hostname == "" || visit_list[i].hostname == "*" ? "--" : visit_list[i].hostname;
-				var tr = tb.insertRow(-1);
-				tr.className = 'tr';
+    function visit_record_key(item) {
+        item = item || {};
+        if (item.record_id !== null && typeof item.record_id !== 'undefined' && item.record_id !== '') {
+            return 'record:' + String(item.record_id);
+        }
+        var appId = item.id !== null && typeof item.id !== 'undefined' ? item.id : item.appid;
+        var action = item.act !== null && typeof item.act !== 'undefined' ? item.act : item.action;
+        var online = item.online !== null && typeof item.online !== 'undefined' ? item.online : '';
+        var firstTime = item.ft !== null && typeof item.ft !== 'undefined' ? item.ft : item.first_time;
+        var latestTime = item.lt !== null && typeof item.lt !== 'undefined' ? item.lt : item.latest_time;
+        var totalTime = item.tt !== null && typeof item.tt !== 'undefined' ? item.tt : item.total_time;
+        if (firstTime !== null && typeof firstTime !== 'undefined' && firstTime !== '') {
+            return [appId, action, firstTime].join('\u001f');
+        }
+        return [appId, action, online, latestTime, totalTime, item.up_bytes, item.down_bytes].join('\u001f');
+    }
 
-                    var appId = String(visit_list[i].id || '');
-                    var appName = get_app_display_name(appId, visit_list[i].name);
-                    var $iconCell = $(tr.insertCell(-1));
-                var $div = $('<div>').css({height:'24px', display:'flex', alignItems:'center', gap:'4px', minWidth:0});
-                var $iconSpan = window.OAFIcon
-                    ? window.OAFIcon.createAppIcon(appId, appName, '<%=resource%>', { size:'20px', radius:'5px', icon: visit_list[i].icon })
-                    : $('<span>');
-                $div.append($iconSpan).append($('<span>').text(appName));
-                if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
-                    window.OAFIcon.bindFeatureHover($div, {
-                        appid: appId,
-                        name: appName,
-                        apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
-                        texts: {
-                            loading: '<%:Loading...%>',
-                            error: '<%:Load failed%>',
-                            empty: '<%:No Data%>',
-                            titleSuffix: '<%:Feature Rules%>'
-                        }
-                    });
+    function rebuild_visit_record_index() {
+        var state = visit_records_state;
+        state.seen = Object.create(null);
+        state.index = Object.create(null);
+        for (var i = 0; i < state.records.length; i++) {
+            var key = visit_record_key(state.records[i]);
+            state.seen[key] = true;
+            state.index[key] = i;
+        }
+    }
+
+
+    function visit_record_equal(left, right) {
+        var leftKeys;
+        var rightKeys;
+        var i;
+        if (left === right) return true;
+        if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+        leftKeys = Object.keys(left);
+        rightKeys = Object.keys(right);
+        if (leftKeys.length !== rightKeys.length) return false;
+        for (i = 0; i < leftKeys.length; i++) {
+            if (left[leftKeys[i]] !== right[leftKeys[i]]) return false;
+        }
+        return true;
+    }
+
+    function merge_visit_records(list, isRefresh, page) {
+        var state = visit_records_state;
+        var fresh = [];
+        var freshKeys = Object.create(null);
+        var changed = false;
+        if (!Array.isArray(list)) return false;
+
+        for (var i = 0; i < list.length; i++) {
+            var key = visit_record_key(item);
+            if (typeof state.index[key] !== 'undefined') {
+                if (!visit_record_equal(state.records[state.index[key]], item)) {
+                    state.records[state.index[key]] = item;
+                    changed = true;
                 }
-                $iconCell.append($div);
+            } else if (isRefresh && page === 1) {
+                if (!freshKeys[key]) {
+                    freshKeys[key] = true;
+                    fresh.push(item);
+                    changed = true;
+                }
+            } else if (!freshKeys[key]) {
+                freshKeys[key] = true;
+                state.index[key] = state.records.length;
+                state.seen[key] = true;
+                state.records.push(item);
+                changed = true;
+            }
+            if (isRefresh && page === 1) freshKeys[key] = true;
+        }
+        if (fresh.length) {
+            state.records = fresh.concat(state.records);
+            rebuild_visit_record_index();
+        }
+        return changed;
+    }
 
-				var first_time_date = new Date(visit_list[i].ft * 1000); // Assuming first_time is in seconds
-				var first_time_str = first_time_date.toLocaleString(); // Convert to local date string
+    function mark_visit_refresh_seen(cycle, list) {
+        if (!cycle || !Array.isArray(list)) return;
+        for (var i = 0; i < list.length; i++) {
+            var item = list[i];
+            var key;
+            if (!item || typeof item !== 'object') continue;
+            key = visit_record_key(item);
+            if (!cycle.seen[key]) {
+                cycle.seen[key] = true;
+                cycle.seenCount++;
+            }
+        }
+    }
 
-				var latest_time_date = new Date(visit_list[i].lt * 1000); // Assuming first_time is in seconds
-				var latest_time_str = latest_time_date.toLocaleString(); // Convert to local date string
 
-				tr.insertCell(-1).innerHTML = first_time_str;
-				tr.insertCell(-1).innerHTML = latest_time_str;
-				var hour = parseInt(visit_list[i].tt / 3600);
-				var seconds = visit_list[i].tt % 3600;
-				var min = parseInt(seconds / 60)
-				var total_time_str;
-				if (visit_list[i].act == 1)
-					total_time_str = "-"
-				else {
-					if (hour > 0)
-						total_time_str = hour + "h " + min + "m"
-					else {
-						if (min == 0)
-							min = 1;
-						total_time_str = min + "m"
-					}
-				}
+    function begin_visit_refresh_cycle() {
+        var state = visit_records_state;
+        state.refreshCycle = {
+            nextPage: 1,
+            // Automatic refresh re-reads only page one. Explicit scrolling still loads later pages,
+            // and records not observed in this refresh remain in the cached list.
+            targetPage: 1,
+            totalPage: null,
+            totalNum: null,
+            totalNumKnown: false,
+            totalNumStable: true,
+            initialCachedCount: state.records.length,
+            scannedThrough: 0,
+            seen: Object.create(null),
+            seenCount: 0
+        };
+        request_visit_page(1, 'refresh');
+    }
 
-				tr.insertCell(-1).innerHTML = total_time_str;
-				var up_traffic_td = tr.insertCell(-1);
-				var down_traffic_td = tr.insertCell(-1);
-				var total_traffic_td = tr.insertCell(-1);
-				up_traffic_td.className = 'td visit-traffic-cell';
-				down_traffic_td.className = 'td visit-traffic-cell';
-				total_traffic_td.className = 'td visit-traffic-cell';
-				up_traffic_td.textContent = format_record_traffic(visit_list[i].up_bytes);
-				down_traffic_td.textContent = format_record_traffic(visit_list[i].down_bytes);
-				total_traffic_td.textContent = format_total_traffic(visit_list[i].up_bytes, visit_list[i].down_bytes);
-				var online_status = visit_list[i].online == 1
-                    ? '<span class="detail-status-positive"><%:Online%></span>'
-                    : '<span class="detail-status-negative"><%:Offline%></span>';
-				tr.insertCell(-1).innerHTML = online_status;
-				tr.insertCell(-1).innerHTML = action_status;
-				var childs = tr.childNodes;
-				Array.prototype.forEach.call(childs, function (child) {
-					child.className = child.classList && child.classList.contains('visit-traffic-cell')
-						? 'td visit-traffic-cell'
-						: 'td';
-				});
-			}
-		}
-	}
+    function finish_visit_refresh_cycle() {
+        var state = visit_records_state;
+        if (!state.refreshCycle) return;
 
-	function render_visit_pagination() {
-		var paginationDiv = document.getElementById('visit_pagination');
-		if (!paginationDiv) return;
-		
-		if (visit_total_page <= 1) {
-			paginationDiv.innerHTML = '';
-			return;
-		}
-		
-		var html = '<div style="display: flex; justify-content: center; align-items: center; margin: 20px 0; gap: 5px;">';
-		
-		if (visit_cur_page > 1) {
-			html += '<button type="button" class="cbi-button" onclick="goToVisitPage(' + (visit_cur_page - 1) + ')" style="min-width: 60px;"><%:Prev Page%></button>';
-		} else {
-			html += '<button type="button" class="cbi-button" disabled style="min-width: 60px; opacity: 0.5;"><%:Prev Page%></button>';
-		}
-		
-		var startPage = Math.max(1, visit_cur_page - 2);
-		var endPage = Math.min(visit_total_page, visit_cur_page + 2);
-		
-		if (startPage > 1) {
-			html += '<button type="button" class="cbi-button" onclick="goToVisitPage(1)" style="min-width: 40px;">1</button>';
-			if (startPage > 2) {
-				html += '<span style="padding: 0 5px;">...</span>';
-			}
-		}
-		
-		for (var i = startPage; i <= endPage; i++) {
-			if (i === visit_cur_page) {
-				html += '<button type="button" class="cbi-button cbi-button-action" style="min-width: 40px; font-weight: bold;">' + i + '</button>';
-			} else {
-				html += '<button type="button" class="cbi-button" onclick="goToVisitPage(' + i + ')" style="min-width: 40px;">' + i + '</button>';
-			}
-		}
-		
-		if (endPage < visit_total_page) {
-			if (endPage < visit_total_page - 1) {
-				html += '<span style="padding: 0 5px;">...</span>';
-			}
-			html += '<button type="button" class="cbi-button" onclick="goToVisitPage(' + visit_total_page + ')" style="min-width: 40px;">' + visit_total_page + '</button>';
-		}
-		
-		if (visit_cur_page < visit_total_page) {
-			html += '<button type="button" class="cbi-button" onclick="goToVisitPage(' + (visit_cur_page + 1) + ')" style="min-width: 60px;"><%:Next Page%></button>';
-		} else {
-			html += '<button type="button" class="cbi-button" disabled style="min-width: 60px; opacity: 0.5;"><%:Next Page%></button>';
-		}
-		
-		var startRecord = (visit_cur_page - 1) * visit_page_size + 1;
-		var endRecord = Math.min(visit_cur_page * visit_page_size, visit_total_num);
-        html += '<span class="visit-pagination-summary" style="margin-left: 20px;"><%:Total%> ' + visit_total_num + ' <%:Records%>，<%:Showing%> ' + startRecord + '-' + endRecord + '</span>';
-		
-		html += '</div>';
-		paginationDiv.innerHTML = html;
-	}
-	
-	function goToVisitPage(page) {
-		if (page < 1 || page > visit_total_page || page === visit_cur_page) {
-			return;
-		}
-		visit_cur_page = page;
-		loadVisitListData(visit_cur_page);
-	}
+        // Refresh pages are offset-based and may not form a stable snapshot while
+        // new records arrive. Keep cached records that were not observed; only the
+        // authoritative total_num === 0 path above may clear the cache.
+        state.refreshCycle = null;
+    }
+
+    function fail_visit_records(page, mode) {
+        var state = visit_records_state;
+        state.error = true;
+        state.errorPage = page;
+        state.errorMode = mode;
+        set_visit_load_state('error');
+        render_visit_list_table();
+    }
+
+    function continue_visit_requests() {
+        var state = visit_records_state;
+        var cycle;
+        var nextPage;
+
+        if (!isVisitRecordsTabActive() || document.hidden || state.loading || state.error)
+            return;
+        if (state.pagePending) {
+            state.pagePending = false;
+            if (state.hasMore) {
+                request_visit_page(state.nextPage, 'page');
+                return;
+            }
+        }
+        cycle = state.refreshCycle;
+        if (cycle) {
+            if (cycle.nextPage <= cycle.targetPage) {
+                nextPage = cycle.nextPage++;
+                request_visit_page(nextPage, 'refresh');
+                return;
+            }
+            finish_visit_refresh_cycle();
+        }
+        if (state.refreshPending) {
+            state.refreshPending = false;
+            begin_visit_refresh_cycle();
+            return;
+        }
+        queue_visit_load();
+    }
+
+    function request_visit_page(page, mode) {
+        var state = visit_records_state;
+        if (!mac || state.loading) return;
+        mode = mode === 'refresh' ? 'refresh' : 'page';
+        if (document.hidden) {
+            if (mode === 'refresh') state.refreshPending = true;
+            else if (state.hasMore) state.pagePending = true;
+            return;
+        }
+        if (mode === 'page' && (state.error || !state.hasMore)) return;
+
+        page = parseInt(page, 10);
+        if (!(page >= 1)) page = 1;
+        var serial = ++state.serial;
+        state.loading = true;
+        state.error = false;
+        state.errorPage = page;
+        state.errorMode = mode;
+        state.refreshing = mode === 'refresh';
+        set_visit_load_state('loading');
+        state.xhr = $.ajax({
+            url: "<%=url('admin/services/oaf/api/dev_visit_list')%>/" + encodeURIComponent(mac),
+            data: { page: page, page_size: visit_page_size },
+            dataType: 'json',
+            timeout: 15000
+        }).done(function(resp) {
+            var returnedPage;
+            var totalPage;
+            var totalNum;
+            var hasTotalNum;
+            var list;
+            var cycle;
+            var authoritativeEmpty;
+            var changed = false;
+            var wasLoaded = state.loaded;
+            returnedPage = parseInt(resp && resp.page, 10);
+            totalPage = parseInt(resp && resp.total_page, 10);
+            totalNum = parseInt(resp && resp.total_num, 10);
+            hasTotalNum = !!(resp && resp.total_num !== null && typeof resp.total_num !== 'undefined' && !isNaN(totalNum));
+            list = resp && Array.isArray(resp.list) ? resp.list : null;
+            authoritativeEmpty = mode === 'refresh' && hasTotalNum && totalNum === 0 && Array.isArray(list) && list.length === 0;
+            if (!resp || !list || !(returnedPage >= 1) || !(totalPage >= 1) || returnedPage > page) {
+                fail_visit_records(page, mode);
+            }
+
+            if (mode === 'refresh') {
+                cycle = state.refreshCycle;
+                if (!cycle) {
+                    fail_visit_records(page, mode);
+                    return;
+                }
+                cycle.targetPage = Math.min(cycle.targetPage, totalPage);
+                merge_visit_records(list, true, returnedPage);
+                cycle.nextPage = returnedPage + 1;
+                if (returnedPage < page) {
+                    cycle.targetPage = Math.min(cycle.targetPage, returnedPage);
+                    cycle.nextPage = cycle.targetPage + 1;
+                }
+                state.hasMore = state.nextPage <= totalPage && list.length >= visit_page_size;
+            } else if (returnedPage < page) {
+                // The backend clamps pages after records disappear; keep the returned page.
+                merge_visit_records(list, false, returnedPage);
+                state.loadedPages = Math.max(state.loadedPages, returnedPage);
+                state.nextPage = returnedPage + 1;
+                state.hasMore = false;
+            } else {
+                merge_visit_records(list, false, page);
+                state.loadedPages = Math.max(state.loadedPages, page);
+                state.nextPage = page + 1;
+                state.hasMore = state.nextPage <= totalPage && list.length >= visit_page_size;
+            }
+            state.loaded = true;
+            state.error = false;
+            set_visit_load_state('idle');
+            render_visit_list_table();
+        }).fail(function() {
+            if (serial === state.serial) fail_visit_records(page, mode);
+        }).always(function() {
+            if (serial !== state.serial) return;
+            state.loading = false;
+            state.xhr = null;
+            state.refreshing = false;
+            continue_visit_requests();
+        });
+    }
+        state.started = true;
+        state.nextPage = 1;
+        state.loadedPages = 0;
+        state.records = [];
+        state.seen = Object.create(null);
+        state.error = false;
+        state.refreshPending = false;
+        state.pagePending = false;
+        state.refreshCycle = null;
+        set_visit_load_state('idle');
+        render_visit_list_table();
+
+    function loadVisitListData() {
+        var state = visit_records_state;
+        if (!mac) return;
+        if (!state.started) {
+            startVisitRecords();
+            return;
+        }
+        if (state.loading) {
+            if (state.hasMore) state.pagePending = true;
+            return;
+        }
+        if (state.error || !state.hasMore) return;
+        request_visit_page(state.nextPage, 'page');
+    }
+
+    function refreshVisitRecords() {
+        var state = visit_records_state;
+        if (!mac) return;
+        if (!state.started) {
+            startVisitRecords();
+            return;
+        }
+        if (state.loading) {
+            state.refreshPending = true;
+            return;
+        }
+        if (state.error || state.refreshCycle) return;
+        begin_visit_refresh_cycle();
+    }
+
+    function retryVisitRecords() {
+        var state = visit_records_state;
+        if (!state.error || state.loading) return;
+        var page = state.errorPage || state.nextPage || 1;
+        var mode = state.errorMode === 'refresh' ? 'refresh' : 'page';
+        state.error = false;
+        if (mode === 'refresh' && !state.refreshCycle)
+            begin_visit_refresh_cycle();
+        else
+            request_visit_page(page, mode);
+    }
+
+
+
+    function update_visit_app_cell(cell, item) {
+        var appIdValue = item.id !== null && typeof item.id !== 'undefined' ? item.id : item.appid;
+        var appId = appIdValue === null || typeof appIdValue === 'undefined' ? '' : String(appIdValue);
+        var appName = get_app_display_name(appId, item.name);
+        var iconValue = item.icon === null || typeof item.icon === 'undefined' ? '' : String(item.icon);
+        var signature = JSON.stringify([appId, appName, iconValue]);
+        var $div;
+        var $iconSpan;
+
+        if (cell._visitAppSignature === signature) return;
+        $div = $('<div>').css({height: '24px', display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0});
+        $iconSpan = window.OAFIcon
+            ? window.OAFIcon.createAppIcon(appId, appName, '<%=resource%>', { size: '20px', radius: '5px', icon: item.icon })
+            : $('<span>');
+        $div.append($iconSpan).append($('<span>').text(appName));
+        if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+            window.OAFIcon.bindFeatureHover($div, {
+                appid: appId,
+                name: appName,
+                apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                texts: {
+                    loading: '<%:Loading...%>',
+                    error: '<%:Load failed%>',
+                    empty: '<%:No Data%>',
+                    titleSuffix: '<%:Feature Rules%>'
+                }
+            });
+        }
+        $(cell).empty().append($div);
+        cell._visitAppSignature = signature;
+    }
+    function update_visit_cell_text(cell, value) {
+        value = value === null || typeof value === 'undefined' ? '' : String(value);
+        if (cell.textContent !== value) cell.textContent = value;
+    }
+    function update_visit_status_cell(cell, positive, label) {
+        var statusClass = positive ? 'detail-status-positive' : 'detail-status-negative';
+        var signature = statusClass + '\u001f' + label;
+        if (cell._visitStatusSignature === signature) return;
+        while (cell.firstChild) cell.removeChild(cell.firstChild);
+        var span = document.createElement('span');
+        span.className = statusClass;
+        span.textContent = label;
+        cell.appendChild(span);
+        cell._visitStatusSignature = signature;
+    }
+
+    function set_visit_cell_class(cell, className) {
+        if (cell.className !== className) cell.className = className;
+    }
+
+    function update_visit_record_row(tr, item) {
+        var firstTime = parseInt(item.ft, 10) || 0;
+        var latestTime = parseInt(item.lt, 10) || 0;
+        var totalSeconds = parseInt(item.tt, 10) || 0;
+        var hour = Math.floor(totalSeconds / 3600);
+        var min = Math.floor((totalSeconds % 3600) / 60);
+        var totalTimeText = '-';
+        var cells = tr.cells;
+        while (cells.length < 9) tr.insertCell(-1);
+        while (cells.length > 9) tr.deleteCell(cells.length - 1);
+        if (tr.className !== 'tr') tr.className = 'tr';
+        set_visit_cell_class(cells[0], 'td');
+        set_visit_cell_class(cells[1], 'td');
+        set_visit_cell_class(cells[2], 'td');
+        set_visit_cell_class(cells[3], 'td');
+        set_visit_cell_class(cells[4], 'td visit-traffic-cell');
+        set_visit_cell_class(cells[5], 'td visit-traffic-cell');
+        set_visit_cell_class(cells[6], 'td visit-traffic-cell');
+        set_visit_cell_class(cells[7], 'td');
+        set_visit_cell_class(cells[8], 'td');
+
+        update_visit_app_cell(cells[0], item);
+        update_visit_cell_text(cells[1], firstTime ? new Date(firstTime * 1000).toLocaleString() : '--');
+        update_visit_cell_text(cells[2], latestTime ? new Date(latestTime * 1000).toLocaleString() : '--');
+        if (item.act != 1) {
+            if (hour > 0) totalTimeText = hour + 'h ' + min + 'm';
+            else totalTimeText = (min || 1) + 'm';
+        }
+        update_visit_cell_text(cells[3], totalTimeText);
+        update_visit_cell_text(cells[4], format_record_traffic(item.up_bytes));
+        update_visit_cell_text(cells[5], format_record_traffic(item.down_bytes));
+        update_visit_cell_text(cells[6], format_total_traffic(item.up_bytes, item.down_bytes));
+        update_visit_status_cell(cells[7], item.online == 1, item.online == 1 ? '<%:Online%>' : '<%:Offline%>');
+        update_visit_status_cell(cells[8], item.act == 1, item.act == 1 ? '<%:Filtered%>' : '<%:Unfiltered%>');
+    }
+
+    function create_visit_record_row(tb, key) {
+        var tr = tb.insertRow(-1);
+        tr.className = 'tr';
+        tr.setAttribute('data-visit-key', key);
+        tr._visitRecordKey = key;
+        var i;
+        for (i = 0; i < 9; i++) tr.insertCell(-1);
+        return tr;
+    }
+
+    function render_visit_list_table() {
+        var tb = document.getElementById('visit_list_table');
+        var scrollEl = document.querySelector('.visit-record-scroll');
+        var scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+        var visit_list = visit_records_state.records;
+        if (!tb) return;
+        if (visit_list.length === 0) {
+            while (tb.rows.length > 1) tb.deleteRow(1);
+            var emptyTr = tb.insertRow(-1);
+            emptyTr.className = 'tr';
+            var emptyTd = emptyTr.insertCell(-1);
+            emptyTd.className = 'td';
+            emptyTd.colSpan = 9;
+            emptyTd.style.textAlign = 'center';
+            emptyTd.textContent = visit_records_state.error && !visit_records_state.loaded
+                ? '<%:Load failed%>'
+                : (visit_records_state.loaded ? '<%:No records%>' : '<%:Collecting data...%>');
+            if (scrollEl) scrollEl.scrollTop = scrollTop;
+            return;
+        }
+
+        var i;
+        for (i = 1; i < tb.rows.length; i++) {
+            var row = tb.rows[i];
+            var key = row._visitRecordKey || row.getAttribute('data-visit-key');
+            if (!key || typeof visit_records_state.index[key] === 'undefined') {
+                if (row.parentNode) row.parentNode.removeChild(row);
+                i--;
+            }
+        }
+
+        var rowContainer = tb.tBodies && tb.tBodies.length ? tb.tBodies[0] : tb;
+        var previousRow = tb.rows[0] || null;
+
+        var orderedKeys = Object.create(null);
+        for (i = 0; i < visit_list.length; i++) {
+            var item = visit_list[i] || {};
+            var key = visit_record_key(item);
+            orderedKeys[key] = true;
+            var tr = null;
+            if (typeof visit_records_state.rowIndex === 'undefined') visit_records_state.rowIndex = Object.create(null);
+            var cached = visit_records_state.rowIndex[key];
+            if (cached && cached.parentNode === rowContainer) tr = cached;
+            if (!tr) {
+                var existing = rowContainer.querySelectorAll('[data-visit-key]');
+                for (var j = 0; j < existing.length; j++) {
+                    if (existing[j]._visitRecordKey === key) { tr = existing[j]; break; }
+                }
+            }
+            if (!tr) tr = create_visit_record_row(tb, key);
+            visit_records_state.rowIndex[key] = tr;
+            update_visit_record_row(tr, item);
+            if (previousRow) {
+                if (previousRow.nextSibling !== tr)
+                    rowContainer.insertBefore(tr, previousRow.nextSibling);
+            } else {
+                rowContainer.insertBefore(tr, rowContainer.firstChild);
+            }
+            previousRow = tr;
+        }
+        if (scrollEl) scrollEl.scrollTop = scrollTop;
+    }
+    function queue_visit_load() {
+        if (visit_load_frame !== null || document.hidden) return;
+        visit_load_frame = window.requestAnimationFrame
+            ? window.requestAnimationFrame(check_visit_load)
+            : window.setTimeout(check_visit_load, 0);
+    }
+
+    function check_visit_load() {
+        visit_load_frame = null;
+        var state = visit_records_state;
+        if (!isVisitRecordsTabActive() || !state.started || state.error || !state.hasMore || document.hidden) return;
+        var sentinel = document.getElementById('visit-record-sentinel');
+        if (!sentinel) return;
+        var rect = sentinel.getBoundingClientRect();
+        var root = document.querySelector('.visit-record-scroll');
+        var top = 0;
+        var bottom = window.innerHeight || document.documentElement.clientHeight;
+        if (root) {
+            var rootRect = root.getBoundingClientRect();
+            top = rootRect.top;
+            bottom = rootRect.bottom;
+        }
+        if (rect.bottom >= top - 160 && rect.top <= bottom + 160) loadVisitListData();
+    }
+
+    function initVisitRecordLoader() {
+        if (visit_loader_initialized) return;
+        var sentinel = document.getElementById('visit-record-sentinel');
+        if (!sentinel) return;
+        visit_loader_initialized = true;
+        var root = document.querySelector('.visit-record-scroll');
+        if (window.IntersectionObserver) {
+            visit_sentinel_observer = new IntersectionObserver(function(entries) {
+                if (entries.some(function(entry) { return entry.isIntersecting; })) queue_visit_load();
+            }, { root: root || null, rootMargin: '0px 0px 160px 0px' });
+            visit_sentinel_observer.observe(sentinel);
+        }
+        $(window).on('scroll.visitRecords resize.visitRecords orientationchange.visitRecords', queue_visit_load);
+        if (root) $(root).on('scroll.visitRecords', queue_visit_load);
+        $(document).on('visibilitychange.visitRecords', function() {
+            if (document.hidden) return;
+            // A response may have completed while hidden; resume the pending page/refresh cycle explicitly.
+            continue_visit_requests();
+            queue_visit_load();
+        });
+        $('#visit-retry').on('click', function(event) {
+            event.preventDefault();
+            retryVisitRecords();
+        });
+    }
+
 
 	function renderHourlyTrafficChart(hourlyStats) {
 		var chartDom = document.getElementById('hourly_traffic_chart');
@@ -1555,17 +2005,18 @@
 			targetTab.classList.add('active');
 		}
 		
-		var tabItems = document.querySelectorAll('.tab-item');
-		tabItems.forEach(function(item) {
-			item.classList.remove('active');
-		});
-		if (!tabEl && window.event && window.event.target) {
-			tabEl = window.event.target;
-		}
-		if (tabEl) {
-			tabEl.classList.add('active');
-		}
-
+        var tabItems = document.querySelectorAll('.tab-item');
+        tabItems.forEach(function(item) {
+            item.classList.remove('active');
+            item.setAttribute('aria-selected', 'false');
+        });
+        if (!tabEl && window.event && window.event.target) {
+            tabEl = window.event.target;
+        }
+        if (tabEl) {
+            tabEl.classList.add('active');
+            tabEl.setAttribute('aria-selected', 'true');
+        }
 		if (tabId === 'tab-user-info') {
 			stopVisitAutoRefresh();
 			loadUserBasicInfo();
@@ -1590,8 +2041,12 @@
 			}
 		}
 		if (tabId === 'tab-visit-records') {
-			startVisitAutoRefresh();
-			loadVisitListData(visit_cur_page);
+            startVisitAutoRefresh();
+            if (!visit_records_state.started) loadVisitListData();
+            else {
+                continue_visit_requests();
+                queue_visit_load();
+            }
 		}
 		if (tabId === 'tab-traffic-statistics') {
 			stopVisitAutoRefresh();
@@ -1635,21 +2090,22 @@
 					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 5.5 9 12l6.5 6.5-1.4 1.4L6.2 12l7.9-7.9 1.4 1.4z"></path></svg>
 					<span><%:Back%></span>
 				</a>
-				<h4 class="user-detail-title"><%:User Detail%>(<span id="device-title-mac">--</span>)</h4>
+                <h4 class="user-detail-title"><span id="device-title-name"><%:User Detail%></span><span id="device-title-separator"></span></h4><span id="device-title-mac" style="display:none;" aria-hidden="true">--</span>
 			</div>
 			
-			<ul class="tab-list">
-				<li class="tab-item active" onclick="showTabContent('tab-user-info', this)"><%:Basic Info%></li>
-				<li class="tab-item" onclick="showTabContent('tab-behavior-rules', this)"><%:Parental Control Rules%></li>
-				<li class="tab-item" onclick="showTabContent('tab-app-duration', this)"><%:App Statistics%></li>
-				<li class="tab-item" onclick="showTabContent('tab-traffic-statistics', this)"><%:Today Traffic%></li>
-				<li class="tab-item" onclick="showTabContent('tab-app-ranking', this)"><%:Today Top Apps%></li>
-				<li class="tab-item" onclick="showTabContent('tab-online-offline-records', this)" style="display:none"><%:Online/Offline Records%></li>
-				<li class="tab-item" onclick="showTabContent('tab-visit-records', this)"><%:Visit Records%></li>
-			</ul>
+            <ul class="tab-list" role="tablist">
+                <li class="tab-item active" role="tab" tabindex="0" aria-selected="true" aria-controls="tab-user-info" onclick="showTabContent('tab-user-info', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-user-info', this); }"><%:Basic Info%></li>
+                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-behavior-rules" onclick="showTabContent('tab-behavior-rules', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-behavior-rules', this); }"><%:Parental Control Rules%></li>
+                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-app-duration" onclick="showTabContent('tab-app-duration', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-app-duration', this); }"><%:App Statistics%></li>
+                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-traffic-statistics" onclick="showTabContent('tab-traffic-statistics', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-traffic-statistics', this); }"><%:Today Traffic%></li>
+                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-app-ranking" onclick="showTabContent('tab-app-ranking', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-app-ranking', this); }"><%:Today Top Apps%></li>
+                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-online-offline-records" onclick="showTabContent('tab-online-offline-records', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-online-offline-records', this); }" style="display:none"><%:Online/Offline Records%></li>
+                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-visit-records" onclick="showTabContent('tab-visit-records', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-visit-records', this); }"><%:Visit Records%></li>
+            </ul>
 
 			<div id="tab-user-info" class="tab-body active">
 				<div>
+                    <div id="basic_info_load_error" class="basic-info-load-error" role="status" aria-live="polite" style="display:none;"><%:Load failed%></div>
 					<table class="table cbi-section-table user-basic-info-table" style="width: 100%;">
 						<tr class="tr">
 							<td class="td" style="font-weight: bold;"><%:MAC Address%></td>
@@ -1793,8 +2249,12 @@
                             <td class="td" colspan="9"><em><br /><%:Collecting data...%></em></td>
                         </tr>
                     </table>
+                <div id="visit-record-sentinel" class="visit-record-sentinel" aria-hidden="true"></div>
                 </div>
-                <div id="visit_pagination" style="margin-top: 20px;"></div>
+                <div id="visit-load-state" class="visit-load-state" aria-live="polite">
+                    <span class="visit-loading" style="display:none;"><%:Loading...%></span>
+                    <span class="visit-error" style="display:none;"><%:Load failed%> <button type="button" id="visit-retry" class="cbi-button"><%:Refresh%></button></span>
+                </div>
             </div>
 		</div>
 	</div>
@@ -1806,13 +2266,21 @@
     .detail-status-positive { color: #15803d; }
     .detail-status-online { color: #2563eb; }
     .detail-status-negative { color: #b91c1c; }
-    .visit-pagination-summary { color: var(--text-color-medium, #6b7280); }
+    .basic-info-load-error { color: #b91c1c; margin-bottom: 8px; }
     .visit-record-scroll {
         overflow-x: auto;
         overflow-y: auto;
         max-height: 1000px;
         max-width: 100%;
         padding-right: 20px;
+    }
+    .visit-load-state {
+        min-height: 24px;
+        margin-top: 12px;
+        color: var(--text-color-medium, #6b7280);
+    }
+    .visit-record-sentinel {
+        height: 1px;
     }
     .visit-record-table {
         min-width: 1000px;
@@ -1902,6 +2370,11 @@
 		transition: background-color 0.3s ease;
 		color: var(--text-color-medium, #6b7280);
 	}
+    .tab-item:focus-visible {
+        outline: 2px solid var(--focus-color, #2563eb);
+        outline-offset: 1px;
+    }
+
 	.tab-item.active {
 		font-weight: bold;
 		background-color: var(--background-color-high, #ffffff);
@@ -1911,25 +2384,37 @@
 		background-color: var(--background-color-medium, #eeeeee);
 	}
 
-	.tab-body {
-		margin-top: 5px;
-		display: none;
-		padding: 5px;
-	}
-	.tab-body.active {
-		display: block;
-	}
+    .tab-body {
+        margin-top: 5px;
+        display: none;
+        padding: 5px;
+        min-width: 0;
+        overflow-x: hidden;
+    }
+    #tab-user-info {
+        overflow-x: auto;
+    }
+    #tab-behavior-rules {
+        overflow-x: auto;
+    }
+    .tab-body.active {
+        display: block;
+    }
 
-	.pie-chart {
-		width: 100%;
-		max-width: 1200px;
-		min-width: 600px;
-	}
-	.bar-chart {
-		width: 100%;
-		max-width: 1600px;
-		min-width: 600px;
-	}
+    .pie-chart {
+        width: 100%;
+        max-width: 1200px;
+        min-width: 0;
+        box-sizing: border-box;
+        overflow-x: auto;
+    }
+    .bar-chart {
+        width: 100%;
+        max-width: 1600px;
+        min-width: 0;
+        box-sizing: border-box;
+        overflow-x: auto;
+    }
 
 	.behavior-rule-table .th,
 	.behavior-rule-table .td {
@@ -2130,10 +2615,8 @@
 </style>
 
 <script type="text/javascript">
-	if (mac) {
-		var titleMac = document.getElementById('device-title-mac');
-		if (titleMac) {
-			titleMac.textContent = mac;
-		}
-	}
+    if (mac) {
+        updateDeviceTitle('', '', mac);
+        initVisitRecordLoader();
+    }
 </script>

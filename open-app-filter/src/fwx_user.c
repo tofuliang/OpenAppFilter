@@ -967,7 +967,11 @@ static int ensure_app_visit_record_schema(sqlite3 *db) {
 
     rc = sqlite3_exec(db,
                       "CREATE INDEX IF NOT EXISTS idx_app_visit_record_date ON app_visit_record (record_date);"
-                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);",
+                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_date ON app_visit_record (mac, record_date);"
+                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_date_nocase ON app_visit_record (mac COLLATE NOCASE, record_date);"
+                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_mac_app_time ON app_visit_record (mac COLLATE NOCASE, appid, end_time, start_time);"
+                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_time_app ON app_visit_record (end_time, start_time, appid);"
+                      "CREATE INDEX IF NOT EXISTS idx_app_visit_record_sort ON app_visit_record (end_time DESC, duration ASC, record_id ASC);",
                       NULL, NULL, NULL);
     if (rc != SQLITE_OK)
         goto ROLLBACK;

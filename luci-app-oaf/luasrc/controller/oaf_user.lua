@@ -1,6 +1,39 @@
 module("luci.controller.oaf_user", package.seeall)
 local utl = require "luci.util"
 
+local MAX_INT32 = 2147483647
+local MAX_PAGE_SIZE = 200
+
+local function trim_value(value)
+    if value == nil then
+        return ""
+    end
+    return tostring(value):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function parse_page_param(name, default_value, min_value, max_value)
+    local raw = luci.http.formvalue(name)
+    local value
+
+    if raw == nil or trim_value(raw) == "" then
+        return default_value
+    end
+    raw = trim_value(raw)
+    if not raw:match("^%d+$") then
+        return nil
+    end
+    value = tonumber(raw)
+    if not value or value % 1 ~= 0 or value < min_value or value > max_value then
+        return nil
+    end
+    return value
+end
+
+local function write_bad_request(message)
+    luci.http.status(400, "Bad Request")
+    luci.http.write_json({ error = message or "Invalid page parameters" })
+end
+
 function index()
 	local page
 	entry({"admin", "services", "oaf", "users"}, alias("admin", "services", "oaf", "users", "list"), _("User List"), 20).dependent = true
@@ -380,23 +413,22 @@ end
 
 
 function get_dev_visit_list(mac)
-	local json = require "luci.jsonc"
-	luci.http.prepare_content("application/json")
-	
-	local req_obj = {}
-	req_obj.api = "dev_visit_list"
-	req_obj.data = {
-		mac = mac
-	}
-	
-	local page = luci.http.formvalue("page")
-	local page_size = luci.http.formvalue("page_size")
-	if page then
-		req_obj.data.page = tonumber(page) or 1
-	end
-	if page_size then
-		req_obj.data.page_size = tonumber(page_size) or 15
-	end
+    luci.http.prepare_content("application/json")
+
+    local page = parse_page_param("page", 1, 1, MAX_INT32)
+    local page_size = parse_page_param("page_size", 15, 1, MAX_PAGE_SIZE)
+    if page == nil or page_size == nil then
+        write_bad_request()
+        return
+    end
+
+    local req_obj = {}
+    req_obj.api = "dev_visit_list"
+    req_obj.data = {
+        mac = mac,
+        page = page,
+        page_size = page_size
+    }
 	
 	local resp_obj = utl.ubus("fwx", "common", req_obj)
 	

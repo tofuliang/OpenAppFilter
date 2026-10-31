@@ -1974,3 +1974,39 @@ msgstr "暂无数据"
 
 msgid "Download"
 msgstr "下载"
+
+msgid "App Traffic Statistics"
+msgstr "应用流量统计"
+
+msgid "Start time"
+msgstr "开始时间"
+
+msgid "End time"
+msgstr "结束时间"
+
+msgid "Visits"
+msgstr "访问次数"
+
+msgid "Overlapping visits are counted in full; values are not exact for the selected time range."
+msgstr "与时间范围相交的访问按完整记录计入；数值不是所选时间范围内的精确流量。"
+
+msgid "A dash means that at least one selected visit has unknown traffic in that direction; it is not zero."
+msgstr "短横线表示所选访问中至少有一条记录该方向流量未知，不代表为零。"
+
+msgid "Start time must not be later than end time."
+msgstr "开始时间不能晚于结束时间。"
+
+msgid "Please enter a valid time range."
+msgstr "请输入有效的时间范围。"
+
+msgid "Range"
+msgstr "范围"
+
+msgid "Whole overlapping visits are counted."
+msgstr "相交的访问按完整记录计入。"
+
+msgid "Unknown traffic is not zero."
+msgstr "未知流量不等于零。"
+
+msgid "Any time"
+msgstr "任意时间"

@@ -82,6 +82,36 @@
         overflow: hidden;
         box-sizing: border-box;
     }
+    .chart-device-links {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+    .chart-device-links:focus-within {
+        position: static;
+        width: auto;
+        height: auto;
+        margin: 6px 0 0;
+        overflow: visible;
+        clip: auto;
+        white-space: normal;
+        border: 0;
+    }
+    .chart-device-links a,
+    .chart-device-links span {
+        display: block;
+        padding: 2px 0;
+    }
+    .chart-device-links a {
+        color: var(--link-color, #2563eb);
+        text-decoration: underline;
+    }
     #history-traffic-card {
         min-height: 270px;
     }
@@ -368,6 +398,12 @@
         cursor: pointer;
         overflow: visible;
     }
+    .top-stats .mini:focus-visible {
+        outline: 2px solid var(--focus-color, #2563eb);
+        outline-offset: 2px;
+    }
+
+
     .top-stats .mini > .tooltip {
         position: absolute;
         z-index: 1000;
@@ -849,6 +885,11 @@
         min-height: 28px;
         box-sizing: border-box;
         position: relative;
+        color: inherit;
+        text-decoration: none;
+    }
+    .active-terminal-item[href] {
+        cursor: pointer;
     }
     .active-terminal-item:last-child {
         border-bottom: 0;
@@ -886,6 +927,11 @@
         text-align: center;
         color: var(--text-color-medium, #888);
         font-size: 12px;
+    }
+    .active-terminal-empty:focus,
+    .chart-device-empty:focus {
+        outline: 2px solid var(--focus-color, #2563eb);
+        outline-offset: 2px;
     }
     [data-darkmode="true"] .active-terminal-up { color: #93c5fd; }
     [data-darkmode="true"] .active-terminal-down { color: #b4a8ff; }
@@ -1373,92 +1419,24 @@
             <button type="button" class="acceleration-warning-close" id="acceleration-warning-close" title="<%:Close%>" aria-label="<%:Close%>">&times;</button>
         </div>
         <div class="top-stats">
-            <div class="mini">
+            <div class="mini" role="link" tabindex="0" aria-label="<%:Online App%>">
                 <div class="stat-head">
                     <span class="stat-label"><%:Online App%></span>
-                    <span class="stat-icon icon-application" aria-hidden="true"></span>
-                </div>
-                <div id="app-count" class="top-stat-value">0</div>
-                <span class="tooltip">
-                    <div class="tooltip-row"><span class="tooltip-label"><%:Online App%>:</span><span class="tooltip-value" id="app-online-count">0</span></div>
-                    <div class="tooltip-row"><span class="tooltip-label"><%:Offline App%>:</span><span class="tooltip-value" id="app-offline-count">0</span></div>
                 </span>
             </div>
-            <div class="mini">
+            <div class="mini" role="link" tabindex="0" aria-label="<%:Online User%>">
                 <div class="stat-head">
                     <span class="stat-label"><%:Online User%></span>
-                    <span class="stat-icon icon-user" aria-hidden="true"></span>
-                </div>
-                <div id="mini-online" class="top-stat-value">0</div>
-                <span class="tooltip">
-                    <div class="tooltip-row"><span class="tooltip-label"><%:Online User%>:</span><span class="tooltip-value" id="user-online-count">0</span></div>
-                    <div class="tooltip-row"><span class="tooltip-label"><%:Offline User%>:</span><span class="tooltip-value" id="user-offline-count">0</span></div>
                 </span>
             </div>
-            <div class="mini">
+            <div class="mini" role="link" tabindex="0" aria-label="<%:Filter Rules%>">
                 <div class="stat-head">
                     <span class="stat-label"><%:Filter Rules%></span>
-                    <span class="stat-icon icon-connect" aria-hidden="true"></span>
-                </div>
-                <div id="mini-rule-count" class="top-stat-value">0</div>
-                <span class="tooltip">
-                    <div class="tooltip-row"><span class="tooltip-label"><%:App Filter Rules%>:</span><span class="tooltip-value" id="rule-af-count">0</span></div>
-                    <div class="tooltip-row"><span class="tooltip-label"><%:Access Control Rules%>:</span><span class="tooltip-value" id="rule-mf-count">0</span></div>
-                </span>
-            </div>
-            <div class="mini">
-                <div class="stat-head">
-                    <span class="stat-label"><%:Today Traffic%></span>
-                    <span class="stat-icon icon-flow" aria-hidden="true"></span>
-                </div>
-                <div id="mini-traffic" class="top-stat-value">0MB</div>
-            </div>
-        </div>
-
-        <div class="main-grid">
-
-
-            <!--
-            <div class="card full">
-                <h3 id="traffic-title"><%:Real-time Traffic%></h3>
-                <div id="line-wan" class="chart-container"></div>
-                <div id="wan-realtime-rate" style="text-align: center; margin-top: 8px; font-size: 13px;">
-                    <span><%:Upload%>:</span><span id="wan-up-rate">0 KB/s</span> 
-                    <span style="margin-left: 15px;"><%:Download%>:</span><span id="wan-down-rate">0 KB/s</span>
-                </div>
-            </div>
-            -->
-            <div class="card full" id="history-traffic-card">
-                <div class="card-title-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <div class="mini-title"><%:Traffic Statistics%></div>
-                    <span class="app-stats-select-wrap">
-                        <select id="traffic-stats-select" class="app-stats-select">
-                            <option value="today" selected><%:Today%></option>
-                            <option value="days30"><%:Last 30 Days%></option>
-                        </select>
-                    </span>
-                </div>
-                <div id="history-traffic-chart" class="chart-container"></div>
-            </div>
-            <div class="card full" id="active-app-card">
-                <div class="mini-title"><%:Visiting%></div>
-                <div class="app-grid" id="active-apps"></div>
-    </div>
-            <div class="card" id="pie-app-card">
-                <div class="card-title-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <div class="mini-title"><%:App Duration Statistics%></div>
-                    <span class="app-stats-select-wrap">
-                        <select id="app-stats-select" class="app-stats-select">
-                            <option value="hourly"><%:Last Hour%></option>
-                            <option value="daily" selected><%:Today%></option>
-                        </select>
-                    </span>
-                </div>
-                <div id="pie-app" class="chart-container"></div>
             </div>
             <div class="card" id="bar-user-traffic-card">
-                <div class="mini-title"><%:User Traffic Top8%></div>
-                <div id="bar-user-traffic" class="chart-container"></div>
+                <div class="mini-title" id="bar-user-traffic-title"><%:User Traffic Top8%></div>
+                <div id="bar-user-traffic" class="chart-container" role="img" aria-labelledby="bar-user-traffic-title"></div>
+                <div id="bar-user-traffic-links" class="chart-device-links" aria-label="<%:User Traffic Top8%>"></div>
             </div>
 
         </div>
@@ -1482,11 +1460,11 @@
                 </div>
                 <div class="compact-row">
                     <span class="compact-label"><%:Feature Library%></span>
-                    <span class="compact-value" id="oaf-feature-version">--</span>
+                    <span class="compact-value" id="oaf-feature-version" role="link" tabindex="0" aria-label="<%:Feature Library%>">--</span>
                 </div>
                 <div class="compact-row">
                     <span class="compact-label"><%:App Record Count%></span>
-                    <span class="compact-value" id="oaf-app-record-count">--</span>
+                    <span class="compact-value" id="oaf-app-record-count" role="link" tabindex="0" aria-label="<%:App Record Count%>">--</span>
                 </div>
             </div>
         </div>
@@ -1750,16 +1728,37 @@
     }
 
     function fetchDashboardCommon(){
-        new XHR().get('<%=url("admin/services/oaf/api/dashboard/get_dashboard_common")%>', null, function(x, data){
-            if(data){
+        if (dashboardCommonInFlight) return;
+        var requestSerial = ++dashboardCommonRequestSerial;
+        var requestToken = {};
+        dashboardCommonInFlight = requestToken;
+        try {
+            $.ajax({
+                url: '<%=url("admin/services/oaf/api/dashboard/get_dashboard_common")%>',
+                dataType: 'json',
+                timeout: 10000
+            }).done(function(data){
+                if (requestSerial !== dashboardCommonRequestSerial || !data) return;
                 try {
                     var json = typeof data === 'string' ? JSON.parse(data) : data;
+                    if (requestSerial !== dashboardCommonRequestSerial) return;
                     updateDashboardData(json);
                 } catch(e) {
+                    if (requestSerial !== dashboardCommonRequestSerial) return;
                     console.error('Failed to parse dashboard data:', e);
                 }
-            }
-        });
+            }).fail(function(){
+                if (requestSerial === dashboardCommonRequestSerial)
+                    console.error('Failed to request dashboard data.');
+            }).always(function(){
+                if (dashboardCommonInFlight === requestToken)
+                    dashboardCommonInFlight = null;
+            });
+        } catch(e) {
+            if (dashboardCommonInFlight === requestToken)
+                dashboardCommonInFlight = null;
+            console.error('Failed to request dashboard data:', e);
+        }
     }
 
     function dismissAccelerationWarning(){
@@ -1788,6 +1787,16 @@
         });
         $('#oaf-app-record-count').on('click', function(){
             location.href = '<%=url("admin/services/oaf/app_record")%>?tab=history';
+        });
+        $('.top-stats .mini[role="link"]').on('keydown.topStats', function(event) {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            $(this).trigger('click');
+        });
+        $('.compact-value[role="link"]').on('keydown.compactNav', function(event) {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            $(this).trigger('click');
         });
         $('.top-stats .mini').on('mousemove', function(e) {
             var $tip = $(this).find('.tooltip');
@@ -1835,58 +1844,217 @@
             return;
         }
 
-        new XHR().get('<%=url("admin/services/oaf/api/dashboard/get_daily_top_users")%>', null, function(x, data){
-            if(data){
-                try {
-                    var json = typeof data === 'string' ? JSON.parse(data) : data;
-                    updateUserTrafficChart(json);
-                } catch(e) {
-                    console.error('Failed to parse user traffic data:', e);
-                }
+        if (!dailyTopUsersInFlight) {
+            var dailyTopUsersSerial = ++dailyTopUsersRequestSerial;
+            var dailyTopUsersRequest = {};
+            dailyTopUsersInFlight = dailyTopUsersRequest;
+            try {
+                $.ajax({
+                    url: '<%=url("admin/services/oaf/api/dashboard/get_daily_top_users")%>',
+                    dataType: 'json',
+                    timeout: 10000
+                }).done(function(data){
+                    if (dailyTopUsersSerial !== dailyTopUsersRequestSerial || !data) return;
+                    try {
+                        var json = typeof data === 'string' ? JSON.parse(data) : data;
+                        if (dailyTopUsersSerial !== dailyTopUsersRequestSerial) return;
+                        updateUserTrafficChart(json);
+                    } catch(e) {
+                        if (dailyTopUsersSerial !== dailyTopUsersRequestSerial) return;
+                        console.error('Failed to parse user traffic data:', e);
+                    }
+                }).fail(function(){
+                    if (dailyTopUsersSerial === dailyTopUsersRequestSerial)
+                        console.error('Failed to request user traffic data.');
+                }).always(function(){
+                    if (dailyTopUsersInFlight === dailyTopUsersRequest)
+                        dailyTopUsersInFlight = null;
+                });
+            } catch(e) {
+                if (dailyTopUsersInFlight === dailyTopUsersRequest)
+                    dailyTopUsersInFlight = null;
+                console.error('Failed to request user traffic data:', e);
             }
-        });
+        }
 
-        new XHR().get('<%=url("admin/services/oaf/api/dashboard/get_active_users")%>?count=8', null, function(x, data){
-            if(data){
-                try {
-                    var json = typeof data === 'string' ? JSON.parse(data) : data;
-                    if(json && json.users && Array.isArray(json.users)) {
-                        activeUsersData = json.users;
-                        cacheUsersByMac(activeUsersData);
-                        renderClientList();
+        if (!activeUsersInFlight) {
+            var activeUsersSerial = ++activeUsersRequestSerial;
+            var activeUsersRequest = {};
+            activeUsersInFlight = activeUsersRequest;
+            try {
+                $.ajax({
+                    url: '<%=url("admin/services/oaf/api/dashboard/get_active_users")%>?count=8',
+                    dataType: 'json',
+                    timeout: 10000
+                }).done(function(data){
+                    if (activeUsersSerial !== activeUsersRequestSerial) return;
+                    if(data){
+                        try {
+                            var json = typeof data === 'string' ? JSON.parse(data) : data;
+                            if (activeUsersSerial !== activeUsersRequestSerial) return;
+                            if(json && json.users && Array.isArray(json.users)) {
+                                activeUsersData = json.users;
+                                cacheUsersByMac(activeUsersData);
+                                renderClientList();
+                            } else {
+                                activeUsersData = [];
+                                renderClientList();
+                            }
+                        } catch(e) {
+                            console.error('Failed to parse active users data:', e);
+                            if (activeUsersSerial !== activeUsersRequestSerial) return;
+                            activeUsersData = [];
+                            renderClientList();
+                        }
                     } else {
                         activeUsersData = [];
                         renderClientList();
                     }
-                } catch(e) {
-                    console.error('Failed to parse active users data:', e);
-                    activeUsersData = [];
-                    renderClientList();
-                }
-            } else {
-                activeUsersData = [];
-                renderClientList();
+                }).fail(function(){
+                    if (activeUsersSerial === activeUsersRequestSerial)
+                        console.error('Failed to request active users data.');
+                }).always(function(){
+                    if (activeUsersInFlight === activeUsersRequest)
+                        activeUsersInFlight = null;
+                });
+            } catch(e) {
+                if (activeUsersInFlight === activeUsersRequest)
+                    activeUsersInFlight = null;
+                console.error('Failed to request active users data:', e);
             }
-        });
+        }
     }
 
-    function fetchHistoryTrafficData(type){
+    function fetchHistoryTrafficData(type, force){
         type = type || currentTrafficStatsType || 'today';
+        var requestType = type;
+        var previousToken = historyTrafficInFlight[requestType];
+        if (previousToken && !force) return;
+        if (force) {
+            Object.keys(historyTrafficInFlight).forEach(function(activeType){
+                var activeToken = historyTrafficInFlight[activeType];
+                if (!activeToken) return;
+                historyTrafficInFlight[activeType] = null;
+                if (activeToken.xhr && activeToken.xhr.readyState !== 4)
+                    activeToken.xhr.abort();
+            });
+        }
+        var requestSerial = ++historyTrafficRequestSerial;
+        var requestToken = {xhr: null};
+        historyTrafficInFlight[requestType] = requestToken;
         var url = type === 'days30' ?
             '<%=url("admin/services/oaf/api/dashboard/get_history_traffic_stats")%>?days=30' :
             '<%=url("admin/services/oaf/api/dashboard/get_global_traffic_stats")%>';
 
-        new XHR().get(url, null, function(x, data){
-            if(data){
+        try {
+            requestToken.xhr = $.ajax({
+                url: url,
+                dataType: 'json',
+                timeout: 10000
+            });
+            requestToken.xhr.done(function(data){
+                if (requestSerial !== historyTrafficRequestSerial || requestType !== currentTrafficStatsType || !data) return;
                 try {
                     var json = typeof data === 'string' ? JSON.parse(data) : data;
-                    updateHistoryTrafficChart(json, type);
+                    if (requestSerial !== historyTrafficRequestSerial || requestType !== currentTrafficStatsType) return;
+                    updateHistoryTrafficChart(json, requestType);
                 } catch(e) {
+                    if (requestSerial !== historyTrafficRequestSerial || requestType !== currentTrafficStatsType) return;
                     console.error('Failed to parse traffic stats data:', e);
                 }
+            }).fail(function(){
+                if (requestSerial === historyTrafficRequestSerial && requestType === currentTrafficStatsType)
+                    console.error('Failed to request traffic stats data.');
+            }).always(function(){
+                if (historyTrafficInFlight[requestType] === requestToken)
+                    historyTrafficInFlight[requestType] = null;
+            });
+        } catch(e) {
+            if (historyTrafficInFlight[requestType] === requestToken)
+                historyTrafficInFlight[requestType] = null;
+            console.error('Failed to request traffic stats data:', e);
+        }
+    }
+
+    function dismissAccelerationWarning(){
+        $('#acceleration-warning').hide();
+        new XHR().post('<%=url("admin/services/oaf/api/dashboard/set_notice_status")%>', {}, function() {});
+    }
+
+    function bindTopStatNav(){
+        $('#app-count').closest('.mini').on('click', function(){
+            location.href = '<%=url("admin/services/oaf/app_record")%>';
+        });
+        $('#mini-online').closest('.mini').on('click', function(){
+            location.href = '<%=url("admin/services/oaf/users/list")%>';
+        });
+        $('#mini-rule-count').closest('.mini').on('click', function(){
+            var afCount = window._afRuleCount || 0;
+            var mfCount = window._mfRuleCount || 0;
+            if (afCount > 0 || mfCount === 0) {
+                location.href = '<%=url("admin/services/oaf/app_filter/rules")%>';
+            } else {
+                location.href = '<%=url("admin/services/oaf/mac_filter/rules")%>';
+            }
+        });
+        $('#oaf-feature-version').on('click', function(){
+            location.href = '<%=url("admin/services/oaf/feature")%>';
+        });
+        $('#oaf-app-record-count').on('click', function(){
+            location.href = '<%=url("admin/services/oaf/app_record")%>?tab=history';
+        });
+        $('.top-stats .mini[role="link"]').on('keydown.topStats', function(event) {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            $(this).trigger('click');
+        });
+        $('.compact-value[role="link"]').on('keydown.compactNav', function(event) {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            $(this).trigger('click');
+        });
+        $('.top-stats .mini').on('mousemove', function(e) {
+            var $tip = $(this).find('.tooltip');
+            if (!$tip.length) {
+                return;
+            }
+            var rect = this.getBoundingClientRect();
+            var tipW = 190;
+            var tipH = 90;
+            var x = e.clientX - rect.left + 12;
+            if (e.clientX + 12 + tipW > window.innerWidth - 8) {
+                x = e.clientX - rect.left - 12 - tipW;
+            }
+            var y = e.clientY - rect.top + 12;
+            if (e.clientY + 12 + tipH > window.innerHeight - 8) {
+                y = e.clientY - rect.top - 12 - tipH;
+            }
+            $tip.css({ left: x, top: y }).show();
+        }).on('mouseleave', function() {
+            $(this).find('.tooltip').hide();
+        });
+    }
+
+    function fetchInitStatusOnce(){
+        if (initStatusFetched) {
+            return;
+        }
+        initStatusFetched = true;
+        new XHR().get('<%=url("admin/services/oaf/api/dashboard/get_init_status")%>', null, function(x, data){
+            if(!data){
+                return;
+            }
+            try {
+                var json = typeof data === 'string' ? JSON.parse(data) : data;
+                shouldShowModeSwitchGuide = parseInt(json.init_status, 10) === 0;
+                updateModeSwitchGuide();
+            } catch(e) {
+                console.error('Failed to parse init status data:', e);
             }
         });
     }
+
+
 
     function isEmptyValue(value) {
         return value === undefined || value === null || value === '' || value === '0.0.0.0';
@@ -1904,6 +2072,20 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+    function userDetailUrl(mac) {
+        var value = mac === undefined || mac === null ? '' : String(mac).trim();
+        if (!value) {
+            return '';
+        }
+        return '<%=url("admin/services/oaf/users/detail")%>?mac=' + encodeURIComponent(value);
+    }
+
+    function navigateToUserDetail(mac) {
+        var detailUrl = userDetailUrl(mac);
+        if (detailUrl) {
+            window.location.href = detailUrl;
+        }
     }
 
     function formatPortSpeed(speed) {
@@ -2492,6 +2674,14 @@
 
     var currentAppStatsType = 'daily';
     var currentTrafficStatsType = 'today';
+    var historyTrafficRequestSerial = 0;
+    var dailyTopUsersRequestSerial = 0;
+    var activeUsersRequestSerial = 0;
+    var dashboardCommonInFlight = null;
+    var dailyTopUsersInFlight = null;
+    var activeUsersInFlight = null;
+    var historyTrafficInFlight = Object.create(null);
+
 
     var appStatsData = {
         hourly: null,
@@ -2624,8 +2814,10 @@
     });
 
     $('#traffic-stats-select').on('change', function() {
-        currentTrafficStatsType = $(this).val() || 'today';
-        fetchHistoryTrafficData(currentTrafficStatsType);
+        var nextType = $(this).val() || 'today';
+        var typeChanged = nextType !== currentTrafficStatsType;
+        currentTrafficStatsType = nextType;
+        fetchHistoryTrafficData(currentTrafficStatsType, typeChanged);
     });
 
     function initAppStatsCustomSwitch() {
@@ -2763,14 +2955,13 @@
                     return '';
                 }
                 var nameInfo = formatUserDisplayName(user);
-                var displayName = nameInfo.display;
-                var fullName = nameInfo.full;
+                var displayName = escapeHtml(nameInfo.display);
                 var upStr = formatTraffic(user.up_bytes);
                 var downStr = formatTraffic(user.down_bytes);
                 var totalStr = formatTraffic(user.total_bytes);
                 return displayName + '<br/>' +
-                       'MAC: ' + (user.mac || '') + '<br/>' +
-                       _IP + ': ' + user.ip + '<br/>' +
+                       'MAC: ' + escapeHtml(user.mac || '') + '<br/>' +
+                       _IP + ': ' + escapeHtml(user.ip || '') + '<br/>' +
                        '<span style="color:' + userTrafficUpColor + ';">&bull;</span> ' + _Upstream + ': ' + upStr + '<br/>' +
                        '<span style="color:' + userTrafficDownColor + ';">&bull;</span> ' + _Downstream + ': ' + downStr + '<br/>' +
                        _Total + ': ' + totalStr;
@@ -2890,6 +3081,16 @@
             }
         ]
     });
+    function handleUserTrafficChartClick(params) {
+        var data = params && params.data;
+        var user = data && data.user;
+        if (user && user.mac) {
+            navigateToUserDetail(user.mac);
+        }
+    }
+
+    barUserTraffic.off('click', handleUserTrafficChartClick);
+    barUserTraffic.on('click', handleUserTrafficChartClick);
 
     var clientData = [];
 
@@ -3308,46 +3509,131 @@
         var nameInfo = formatUserDisplayName(user);
         return nameInfo.display;
     }
+    function getDashboardFocusedHref(container) {
+        if (!container || typeof document === 'undefined' || !document.activeElement || !container.contains(document.activeElement)) {
+            return '';
+        }
+
+        var activeElement = document.activeElement;
+        while (activeElement && activeElement !== container) {
+            if (activeElement.tagName && activeElement.tagName.toLowerCase() === 'a') {
+                return activeElement.getAttribute('href') || '';
+            }
+            activeElement = activeElement.parentElement;
+        }
+        return '';
+    }
+
+    function restoreDashboardFocus(container, href) {
+        var links;
+        var i;
+        if (!container || !href) {
+            return false;
+        }
+
+        links = container.getElementsByTagName('a');
+        for (i = 0; i < links.length; i++) {
+            if (links[i].getAttribute('href') === href) {
+                if (typeof links[i].focus === 'function') {
+                    links[i].focus();
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function updateActiveTerminalItem(item, row) {
+        item.querySelector('.active-terminal-name').textContent = row.name;
+        item.querySelector('.active-terminal-up').textContent = '\u2191 ' + row.upRate;
+        item.querySelector('.active-terminal-down').textContent = '\u2193 ' + row.downRate;
+        item.querySelector('.active-terminal-app').textContent = row.app;
+        item.querySelector('.tooltip').innerHTML = row.tooltipHtml;
+    }
 
     function renderClientList() {
-        $activeTerminalList.empty();
-        if (!activeUsersData || activeUsersData.length === 0) {
-            $activeTerminalList.html('<div class="active-terminal-empty">' + _NoData + '</div>');
+        var container = $activeTerminalList[0];
+        if (!container) {
             return;
         }
 
-        var rows = activeUsersData.slice(0, 8).map(function(user) {
+        if (!activeUsersData || activeUsersData.length === 0) {
+            var emptySignature = 'empty:' + _NoData;
+            if ($activeTerminalList.attr('data-dashboard-render-signature') === emptySignature) {
+                return;
+            }
+
+            var emptyFocusHref = getDashboardFocusedHref(container);
+            $activeTerminalList.empty()
+                .html('<div class="active-terminal-empty" tabindex="-1" aria-live="polite">' + _NoData + '</div>')
+                .attr('data-dashboard-render-signature', emptySignature);
+            if (emptyFocusHref && !restoreDashboardFocus(container, emptyFocusHref)) {
+                var emptyState = container.querySelector('.active-terminal-empty');
+                if (emptyState && typeof emptyState.focus === 'function') emptyState.focus();
+            }
+            return;
+        }
+
+        var renderData = activeUsersData.slice(0, 8).map(function(user) {
             var nameInfo = formatUserDisplayName(user);
-            var name = nameInfo.display;
-            var fullName = nameInfo.full;
+            var name = nameInfo.display || '--';
             var upRate = formatRate(user.up_rate || 0);
             var downRate = formatRate(user.down_rate || 0);
-            var app = (user.app && user.app.trim() !== '') ? user.app : '--';
-            var mac = user.mac || '';
-            var alias = (user.nickname && String(user.nickname).trim() !== '') ? user.nickname : ((user.hostname && String(user.hostname).trim() !== '') ? user.hostname : '');
-            var macDisplay = mac;
-            if (alias) {
-                macDisplay = mac + ' (' + alias + ')';
-            }
-            var tooltipHtml =
-                '<div class="tooltip-row"><span class="tooltip-label">' + _MACAddress + ':</span><span class="tooltip-value">' + escapeHtml(macDisplay) + '</span></div>' +
-                '<div class="tooltip-row"><span class="tooltip-label">' + _IP + ':</span><span class="tooltip-value">' + escapeHtml(user.ip || '--') + '</span></div>' +
-                '<div class="tooltip-row"><span class="tooltip-label">' + _UpstreamRate + ':</span><span class="tooltip-value">' + escapeHtml(upRate) + '</span></div>' +
-                '<div class="tooltip-row"><span class="tooltip-label">' + _DownstreamRate + ':</span><span class="tooltip-value">' + escapeHtml(downRate) + '</span></div>' +
-                '<div class="tooltip-row"><span class="tooltip-label">' + _UpstreamTraffic + ':</span><span class="tooltip-value">' + escapeHtml(formatTraffic(user.today_up_bytes || 0)) + '</span></div>' +
-                '<div class="tooltip-row"><span class="tooltip-label">' + _DownstreamTraffic + ':</span><span class="tooltip-value">' + escapeHtml(formatTraffic(user.today_down_bytes || 0)) + '</span></div>' +
-                '<div class="tooltip-row"><span class="tooltip-label">' + _CurrentApp + ':</span><span class="tooltip-value">' + escapeHtml(app) + '</span></div>' +
                 '<div class="tooltip-row"><span class="tooltip-label">' + _CurrentURL + ':</span><span class="tooltip-value">' + escapeHtml(user.url || '--') + '</span></div>';
 
-            return '<div class="active-terminal-item">' +
-                '<span class="active-terminal-name">' + escapeHtml(name || '--') + '</span>' +
-                '<span class="active-terminal-up">&uarr; ' + escapeHtml(upRate) + '</span>' +
-                '<span class="active-terminal-down">&darr; ' + escapeHtml(downRate) + '</span>' +
-                '<span class="active-terminal-app">' + escapeHtml(app) + '</span>' +
-                '<span class="tooltip">' + tooltipHtml + '</span>' +
-                '</div>';
+            return {
+                name: name,
+                upRate: upRate,
+                downRate: downRate,
+                app: app,
+                mac: mac,
+                detailHref: userDetailUrl(mac),
+                tooltipHtml: tooltipHtml
+            };
+        });
+        var signature = 'rows:' + JSON.stringify(renderData.map(function(row) {
+            return [row.mac, row.detailHref || '', row.name];
+        }));
+        var currentSignature = $activeTerminalList.attr('data-dashboard-render-signature');
+        if (currentSignature === signature) {
+            var currentItems = $activeTerminalList.children('.active-terminal-item');
+            var canUpdateInPlace = currentItems.length === renderData.length;
+            if (canUpdateInPlace) {
+                for (var rowIndex = 0; rowIndex < renderData.length; rowIndex++) {
+                    var currentItem = currentItems[rowIndex];
+                    if (!currentItem.querySelector('.active-terminal-name') ||
+                        !currentItem.querySelector('.active-terminal-up') ||
+                        !currentItem.querySelector('.active-terminal-down') ||
+                        !currentItem.querySelector('.active-terminal-app') ||
+                        !currentItem.querySelector('.tooltip')) {
+                        canUpdateInPlace = false;
+                        break;
+                    }
+                }
+            }
+            if (canUpdateInPlace) {
+                for (var updateIndex = 0; updateIndex < renderData.length; updateIndex++) {
+                    updateActiveTerminalItem(currentItems[updateIndex], renderData[updateIndex]);
+                }
+                return;
+            }
+        }
+
+        var rows = renderData.map(function(row) {
+            var itemTag = row.detailHref ? 'a' : 'div';
+            var itemHref = row.detailHref ? ' href="' + escapeHtml(row.detailHref) + '"' : '';
+            return '<' + itemTag + ' class="active-terminal-item"' + itemHref + '>' +
+                '<span class="active-terminal-name">' + escapeHtml(row.name) + '</span>' +
+                '<span class="active-terminal-up">&uarr; ' + escapeHtml(row.upRate) + '</span>' +
+                '<span class="active-terminal-down">&darr; ' + escapeHtml(row.downRate) + '</span>' +
+                '<span class="active-terminal-app">' + escapeHtml(row.app) + '</span>' +
+                '<span class="tooltip">' + row.tooltipHtml + '</span>' +
+                '</' + itemTag + '>';
         }).join('');
-        $activeTerminalList.html(rows);
+        var focusHref = getDashboardFocusedHref(container);
+        $activeTerminalList.empty()
+            .html(rows)
+            .attr('data-dashboard-render-signature', signature);
         $activeTerminalList.off('mousemove.activeTip mouseleave.activeTip')
             .on('mousemove.activeTip', '.active-terminal-item', function(e) {
                 var $tip = $(this).find('.tooltip');
@@ -3359,11 +3645,12 @@
                 if (y < 0) {
                     y = 0;
                 }
-                $tip.css({ top: y });
+                $tip.show().css({ top: y });
             })
             .on('mouseleave.activeTip', '.active-terminal-item', function() {
                 $(this).find('.tooltip').hide();
             });
+        restoreDashboardFocus(container, focusHref);
     }
     function formatTime(timestamp){
         var d = new Date(timestamp);
@@ -4068,8 +4355,54 @@
         resizeDashboardCharts();
     }
 
+    function renderUserTrafficLinks(users) {
+        var container = document.getElementById('bar-user-traffic-links');
+        if (!container) return;
+
+        if (!Array.isArray(users) || users.length === 0) {
+            var emptySignature = 'empty:' + _NoData;
+            if (container.getAttribute('data-dashboard-links-signature') === emptySignature) {
+                return;
+            }
+            var emptyFocusHref = getDashboardFocusedHref(container);
+            container.innerHTML = '<span class="chart-device-empty" tabindex="-1" aria-live="polite">' + escapeHtml(_NoData) + '</span>';
+            container.setAttribute('data-dashboard-links-signature', emptySignature);
+            if (emptyFocusHref && !restoreDashboardFocus(container, emptyFocusHref)) {
+                var emptyState = container.querySelector('.chart-device-empty');
+                if (emptyState && typeof emptyState.focus === 'function') emptyState.focus();
+            }
+            return;
+        }
+
+        var links = users.map(function(user, index) {
+            var nameInfo = formatUserDisplayName(user || {});
+            var label = (index + 1) + '. ' + (nameInfo.full || nameInfo.display || _Unknown);
+            return {
+                label: label,
+                href: userDetailUrl(user && user.mac)
+            };
+        });
+        var signature = 'links:' + JSON.stringify(links.map(function(link) {
+            return [link.href || '', link.label];
+        }));
+        if (container.getAttribute('data-dashboard-links-signature') === signature) {
+            return;
+        }
+
+        var focusHref = getDashboardFocusedHref(container);
+        container.innerHTML = links.map(function(link) {
+            if (link.href) {
+                return '<a href="' + escapeHtml(link.href) + '">' + escapeHtml(link.label) + '</a>';
+            }
+            return '<span>' + escapeHtml(link.label) + '</span>';
+        }).join('');
+        container.setAttribute('data-dashboard-links-signature', signature);
+        restoreDashboardFocus(container, focusHref);
+    }
+
     function updateUserTrafficChart(data){
         if(!data || !data.users || !Array.isArray(data.users)) {
+            renderUserTrafficLinks([]);
             barUserTraffic.setOption({
                 yAxis: [
                     { data: [] },
@@ -4084,7 +4417,8 @@
             return;
         }
 
-        var users = data.users || [];
+        var users = data.users.slice(0, 8);
+        renderUserTrafficLinks(users);
         cacheUsersByMac(users);
         var names = [];
         var upValues = [];
