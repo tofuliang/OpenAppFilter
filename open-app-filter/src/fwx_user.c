@@ -21,6 +21,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
+#include <ctype.h>
 #include <sqlite3.h>
 #include <uci.h>
 #include "fwx_config.h"
@@ -976,6 +978,56 @@ static int ensure_app_visit_record_schema(sqlite3 *db) {
     if (rc != SQLITE_OK)
         goto ROLLBACK;
 
+    /* Exact traffic starts with v2 deltas only. Legacy visit/hourly records
+     * intentionally remain separate and are never backfilled into facts. */
+    rc = sqlite3_exec(db,
+                      "CREATE TABLE IF NOT EXISTS traffic_hourly_v2 ("
+                      "bucket_start INTEGER NOT NULL CHECK(typeof(bucket_start) = 'integer' AND bucket_start >= 0 AND bucket_start % 3600 = 0),"
+                      "mac TEXT NOT NULL, appid INTEGER NOT NULL CHECK(appid >= 0),"
+                      "up_bytes INTEGER NOT NULL CHECK(typeof(up_bytes) = 'integer' AND up_bytes >= 0),"
+                      "down_bytes INTEGER NOT NULL CHECK(typeof(down_bytes) = 'integer' AND down_bytes >= 0),"
+                      "PRIMARY KEY(bucket_start, mac, appid));"
+                      "CREATE INDEX IF NOT EXISTS idx_traffic_hourly_v2_mac_bucket "
+                      "ON traffic_hourly_v2(mac, bucket_start);"
+                      "CREATE TABLE IF NOT EXISTS traffic_hourly_batch_v2 ("
+                      "boot_id TEXT NOT NULL, seq INTEGER NOT NULL CHECK(seq > 0),"
+                      "bucket_start INTEGER, PRIMARY KEY(boot_id, seq));"
+                      "CREATE TABLE IF NOT EXISTS traffic_hourly_state_v2 ("
+                      "key TEXT PRIMARY KEY, value INTEGER NOT NULL CHECK(typeof(value) = 'integer' AND value >= 0));"
+                      "INSERT OR IGNORE INTO traffic_hourly_state_v2 VALUES('retention_floor', 0);"
+                      "INSERT OR IGNORE INTO traffic_hourly_state_v2 VALUES('kernel_incomplete', 0);",
+                      NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto ROLLBACK;
+
+    /* The public batch identity is just (boot_id, seq). Add pruning metadata
+     * to databases that already contain that minimal schema; unknown old
+     * bucket mappings stay NULL and their dedupe keys are retained. */
+    rc = sqlite3_prepare_v2(db, "PRAGMA table_info(traffic_hourly_batch_v2);", -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
+        goto ROLLBACK;
+    int has_batch_bucket = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        if (name && strcmp(name, "bucket_start") == 0)
+            has_batch_bucket = 1;
+    }
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (rc != SQLITE_DONE)
+        goto ROLLBACK;
+    if (!has_batch_bucket) {
+        rc = sqlite3_exec(db, "ALTER TABLE traffic_hourly_batch_v2 ADD COLUMN bucket_start INTEGER;",
+                          NULL, NULL, NULL);
+        if (rc != SQLITE_OK)
+            goto ROLLBACK;
+    }
+    rc = sqlite3_exec(db,
+                      "CREATE INDEX IF NOT EXISTS idx_traffic_hourly_batch_v2_bucket "
+                      "ON traffic_hourly_batch_v2(bucket_start);", NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto ROLLBACK;
+
     rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
     if (rc != SQLITE_OK)
         goto ROLLBACK;
@@ -1011,6 +1063,16 @@ int open_client_visit_db(sqlite3 **db) {
         return -1;
     }
 
+    /* Explicit FULL synchronization protects a committed delta and its
+     * dedupe identity together. /tmp remains RAM-backed across power loss;
+     * reboot durability requires a persistent configured history path. */
+    rc = sqlite3_exec(*db, "PRAGMA synchronous=FULL;", NULL, NULL, NULL);
+    if (rc != SQLITE_OK) {
+        sqlite3_close(*db);
+        *db = NULL;
+        return -1;
+    }
+
     rc = ensure_app_visit_record_schema(*db);
     if (rc != SQLITE_OK) {
         LOG_ERROR("Failed to init sqlite db: %s (rc: %d)\n", db_path, rc);
@@ -1020,6 +1082,412 @@ int open_client_visit_db(sqlite3 **db) {
     }
 
     return 0;
+}
+
+static int read_exact_traffic_int(struct json_object *obj, const char *key,
+                                  sqlite3_int64 *value)
+{
+    struct json_object *field = NULL;
+
+    if (!json_object_object_get_ex(obj, key, &field) ||
+        !json_object_is_type(field, json_type_int) ||
+        json_object_get_int64(field) < 0 ||
+        json_object_get_uint64(field) > INT64_MAX)
+        return -1;
+    *value = json_object_get_int64(field);
+    return 0;
+}
+
+static int exact_traffic_string_is(struct json_object *obj, const char *key,
+                                    const char *expected)
+{
+    struct json_object *field = NULL;
+    const char *value;
+
+    if (!json_object_object_get_ex(obj, key, &field) ||
+        !json_object_is_type(field, json_type_string))
+        return 0;
+    value = json_object_get_string(field);
+    return value && (size_t)json_object_get_string_len(field) == strlen(expected) &&
+           strcmp(value, expected) == 0;
+}
+
+int apply_exact_traffic_json(struct json_object *root)
+{
+    struct {
+        int appid;
+        sqlite3_int64 up_bytes;
+        sqlite3_int64 down_bytes;
+    } items[MAX_EXACT_TRAFFIC_ITEMS];
+    struct json_object *field = NULL;
+    struct json_object *array = NULL;
+    struct json_object *coverage = NULL;
+    const char *raw_mac;
+    const char *boot_id;
+    char mac[18];
+    sqlite3_int64 version;
+    sqlite3_int64 seq;
+    sqlite3_int64 bucket_start;
+    sqlite3_int64 retention_floor;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    size_t count;
+    size_t i;
+    int kernel_incomplete = 0;
+    int in_transaction = 0;
+    int result = -1;
+    int rc = SQLITE_OK;
+
+    if (!json_object_is_type(root, json_type_object) ||
+        read_exact_traffic_int(root, "v", &version) != 0 || version != 2 ||
+        !exact_traffic_string_is(root, "type", "traffic_delta") ||
+        read_exact_traffic_int(root, "seq", &seq) != 0 || seq == 0 ||
+        read_exact_traffic_int(root, "bucket_start", &bucket_start) != 0 ||
+        bucket_start > INT64_MAX - 3600 || bucket_start % 3600 != 0)
+        return -1;
+
+    if (!json_object_object_get_ex(root, "mac", &field) ||
+        !json_object_is_type(field, json_type_string) ||
+        json_object_get_string_len(field) != 17)
+        return -1;
+    raw_mac = json_object_get_string(field);
+    if (!raw_mac)
+        return -1;
+    for (i = 0; i < 17; i++) {
+        unsigned char c = (unsigned char)raw_mac[i];
+        if ((i % 3 == 2 && c != ':') || (i % 3 != 2 && !isxdigit(c)))
+            return -1;
+        mac[i] = (char)tolower(c);
+    }
+    mac[17] = '\0';
+
+    if (!json_object_object_get_ex(root, "boot_id", &field) ||
+        !json_object_is_type(field, json_type_string) ||
+        json_object_get_string_len(field) < 1 || json_object_get_string_len(field) > 64)
+        return -1;
+    boot_id = json_object_get_string(field);
+    if (!boot_id || memchr(boot_id, '\0', json_object_get_string_len(field)))
+        return -1;
+    if (!json_object_object_get_ex(root, "coverage", &coverage) ||
+        !json_object_is_type(coverage, json_type_object) ||
+        !exact_traffic_string_is(coverage, "up", "observed") ||
+        !exact_traffic_string_is(coverage, "down", "observed"))
+        return -1;
+    if (json_object_object_get_ex(root, "complete", &field)) {
+        if (!json_object_is_type(field, json_type_boolean))
+            return -1;
+        kernel_incomplete = !json_object_get_boolean(field);
+    }
+    if (!json_object_object_get_ex(root, "items", &array) ||
+        !json_object_is_type(array, json_type_array))
+        return -1;
+    count = json_object_array_length(array);
+    if (count == 0 || count > MAX_EXACT_TRAFFIC_ITEMS)
+        return -1;
+
+    /* Validate the entire bounded batch before opening a write transaction.
+     * A bad item must never produce a partial fact or a consumed sequence. */
+    for (i = 0; i < count; i++) {
+        struct json_object *item = json_object_array_get_idx(array, i);
+        sqlite3_int64 appid;
+        if (!json_object_is_type(item, json_type_object) ||
+            read_exact_traffic_int(item, "appid", &appid) != 0 || appid > INT_MAX ||
+            read_exact_traffic_int(item, "up_bytes", &items[i].up_bytes) != 0 ||
+            read_exact_traffic_int(item, "down_bytes", &items[i].down_bytes) != 0 ||
+            items[i].up_bytes > INT64_MAX - items[i].down_bytes ||
+            !json_object_object_get_ex(item, "unknown", &field) ||
+            !json_object_is_type(field, json_type_boolean) ||
+            !!json_object_get_boolean(field) != (appid == 0))
+            return -1;
+        items[i].appid = (int)appid;
+    }
+
+    if (open_client_visit_db(&db) != 0)
+        return -1;
+    rc = sqlite3_exec(db, "BEGIN IMMEDIATE;", NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    in_transaction = 1;
+    rc = sqlite3_prepare_v2(db,
+                            "SELECT value FROM traffic_hourly_state_v2 WHERE key = 'retention_floor';",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW || sqlite3_column_type(stmt, 0) != SQLITE_INTEGER) {
+        rc = SQLITE_CORRUPT;
+        goto CLEANUP;
+    }
+    retention_floor = sqlite3_column_int64(stmt, 0);
+    rc = sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    if (retention_floor < 0 || retention_floor % 3600 != 0) {
+        rc = SQLITE_CORRUPT;
+        goto CLEANUP;
+    }
+    /* The durable floor replaces dedupe keys pruned by retention. A delayed
+     * replay below it is discarded instead of resurrecting deleted hours. */
+    if (bucket_start < retention_floor) {
+        result = 1;
+        goto COMMIT;
+    }
+
+    rc = sqlite3_prepare_v2(db,
+                            "INSERT INTO traffic_hourly_batch_v2(boot_id, seq, bucket_start) "
+                            "VALUES(?, ?, ?) ON CONFLICT(boot_id, seq) DO NOTHING;",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK ||
+        (rc = sqlite3_bind_text(stmt, 1, boot_id, -1, SQLITE_STATIC)) != SQLITE_OK ||
+        (rc = sqlite3_bind_int64(stmt, 2, seq)) != SQLITE_OK ||
+        (rc = sqlite3_bind_int64(stmt, 3, bucket_start)) != SQLITE_OK)
+        goto CLEANUP;
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE)
+        goto CLEANUP;
+    result = sqlite3_changes(db) == 0 ? 1 : 0;
+    rc = sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (rc != SQLITE_OK || result == 1)
+        goto COMMIT;
+
+    if (kernel_incomplete) {
+        rc = sqlite3_exec(db,
+                          "UPDATE traffic_hourly_state_v2 SET value = 1 WHERE key = 'kernel_incomplete';",
+                          NULL, NULL, NULL);
+        if (rc != SQLITE_OK)
+            goto CLEANUP;
+    }
+    rc = sqlite3_prepare_v2(db,
+                            "INSERT INTO traffic_hourly_v2(bucket_start, mac, appid, up_bytes, down_bytes) "
+                            "VALUES(?, ?, ?, ?, ?) ON CONFLICT(bucket_start, mac, appid) DO UPDATE SET "
+                            "up_bytes = traffic_hourly_v2.up_bytes + excluded.up_bytes, "
+                            "down_bytes = traffic_hourly_v2.down_bytes + excluded.down_bytes "
+                            "WHERE typeof(traffic_hourly_v2.up_bytes) = 'integer' "
+                            "AND typeof(traffic_hourly_v2.down_bytes) = 'integer' "
+                            "AND traffic_hourly_v2.up_bytes >= 0 AND traffic_hourly_v2.down_bytes >= 0 "
+                            "AND traffic_hourly_v2.up_bytes <= 9223372036854775807 - excluded.up_bytes "
+                            "AND traffic_hourly_v2.down_bytes <= 9223372036854775807 - excluded.down_bytes;",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    for (i = 0; i < count; i++) {
+        if ((rc = sqlite3_bind_int64(stmt, 1, bucket_start)) != SQLITE_OK ||
+            (rc = sqlite3_bind_text(stmt, 2, mac, -1, SQLITE_STATIC)) != SQLITE_OK ||
+            (rc = sqlite3_bind_int(stmt, 3, items[i].appid)) != SQLITE_OK ||
+            (rc = sqlite3_bind_int64(stmt, 4, items[i].up_bytes)) != SQLITE_OK ||
+            (rc = sqlite3_bind_int64(stmt, 5, items[i].down_bytes)) != SQLITE_OK)
+            goto CLEANUP;
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE)
+            goto CLEANUP;
+        if (sqlite3_changes(db) != 1) {
+            rc = SQLITE_TOOBIG;
+            goto CLEANUP;
+        }
+        rc = sqlite3_reset(stmt);
+        if (rc != SQLITE_OK)
+            goto CLEANUP;
+    }
+    rc = sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+
+COMMIT:
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+    if (rc == SQLITE_OK)
+        in_transaction = 0;
+CLEANUP:
+    if (stmt)
+        sqlite3_finalize(stmt);
+    if (in_transaction)
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR("exact traffic batch failed: boot=%s seq=%lld rc=%d\n",
+                  boot_id, (long long)seq, rc);
+        result = -1;
+    }
+    sqlite3_close(db);
+    return result;
+}
+
+/* Retention removes whole UTC hours. Advancing the durable floor in the same
+ * transaction makes their batch keys safe to prune without replay revival.
+ * Size pressure never removes the current hour or rejects its new deltas. */
+static int cleanup_exact_traffic_history(int record_time, int trim_oldest)
+{
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    sqlite3_int64 floor = 0;
+    sqlite3_int64 current_bucket;
+    sqlite3_int64 row_count;
+    sqlite3_int64 now = (sqlite3_int64)time(NULL);
+    char db_path[512] = {0};
+    int rc = SQLITE_OK;
+    int changed = 0;
+    int in_transaction = 0;
+
+    if (now < 0)
+        return -1;
+    current_bucket = now - now % 3600;
+    if (record_time > 0) {
+        sqlite3_int64 keep_seconds = (sqlite3_int64)record_time * SECONDS_PER_DAY;
+        if (now > keep_seconds) {
+            floor = now - keep_seconds;
+            floor -= floor % 3600;
+        }
+    }
+    if (floor == 0 && !trim_oldest)
+        return 0;
+    build_client_visit_db_path(db_path, sizeof(db_path));
+    if (access(db_path, F_OK) != 0)
+        return errno == ENOENT ? 0 : -1;
+    if (open_client_visit_db(&db) != 0)
+        return -1;
+    rc = sqlite3_exec(db, "BEGIN IMMEDIATE;", NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    in_transaction = 1;
+    if (trim_oldest) {
+        rc = sqlite3_prepare_v2(db,
+                                "SELECT COUNT(*) FROM ("
+                                "SELECT bucket_start FROM traffic_hourly_v2 UNION ALL "
+                                "SELECT bucket_start FROM traffic_hourly_batch_v2) "
+                                "WHERE bucket_start < ?;", -1, &stmt, NULL);
+        if (rc != SQLITE_OK ||
+            (rc = sqlite3_bind_int64(stmt, 1, current_bucket)) != SQLITE_OK)
+            goto CLEANUP;
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_ROW || sqlite3_column_type(stmt, 0) != SQLITE_INTEGER) {
+            rc = SQLITE_CORRUPT;
+            goto CLEANUP;
+        }
+        row_count = sqlite3_column_int64(stmt, 0);
+        rc = sqlite3_finalize(stmt);
+        stmt = NULL;
+        if (rc != SQLITE_OK)
+            goto CLEANUP;
+        if (row_count < 0) {
+            rc = SQLITE_CORRUPT;
+            goto CLEANUP;
+        }
+        if (row_count > 0) {
+            rc = sqlite3_prepare_v2(db,
+                                    "SELECT bucket_start FROM ("
+                                    "SELECT bucket_start FROM traffic_hourly_v2 UNION ALL "
+                                    "SELECT bucket_start FROM traffic_hourly_batch_v2) "
+                                    "WHERE bucket_start < ? ORDER BY bucket_start LIMIT 1 OFFSET ?;",
+                                    -1, &stmt, NULL);
+            if (rc != SQLITE_OK ||
+                (rc = sqlite3_bind_int64(stmt, 1, current_bucket)) != SQLITE_OK ||
+                (rc = sqlite3_bind_int64(stmt, 2, (row_count - 1) / 4)) != SQLITE_OK)
+                goto CLEANUP;
+            rc = sqlite3_step(stmt);
+            if (rc != SQLITE_ROW || sqlite3_column_type(stmt, 0) != SQLITE_INTEGER) {
+                rc = SQLITE_CORRUPT;
+                goto CLEANUP;
+            }
+            sqlite3_int64 oldest_bucket = sqlite3_column_int64(stmt, 0);
+            if (oldest_bucket < 0 || oldest_bucket % 3600 != 0 || oldest_bucket >= current_bucket) {
+                rc = SQLITE_CORRUPT;
+                goto CLEANUP;
+            }
+            if (floor < oldest_bucket + 3600)
+                floor = oldest_bucket + 3600;
+            rc = sqlite3_finalize(stmt);
+            stmt = NULL;
+            if (rc != SQLITE_OK)
+                goto CLEANUP;
+        }
+    }
+    rc = sqlite3_prepare_v2(db,
+                            "UPDATE traffic_hourly_state_v2 SET value = ? "
+                            "WHERE key = 'retention_floor' AND value < ?;", -1, &stmt, NULL);
+    if (rc != SQLITE_OK ||
+        (rc = sqlite3_bind_int64(stmt, 1, floor)) != SQLITE_OK ||
+        (rc = sqlite3_bind_int64(stmt, 2, floor)) != SQLITE_OK)
+        goto CLEANUP;
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE)
+        goto CLEANUP;
+    rc = sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    rc = sqlite3_exec(db,
+                      "DELETE FROM traffic_hourly_v2 WHERE bucket_start < "
+                      "(SELECT value FROM traffic_hourly_state_v2 WHERE key = 'retention_floor');",
+                      NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    changed = sqlite3_changes(db) > 0;
+    rc = sqlite3_exec(db,
+                      "DELETE FROM traffic_hourly_batch_v2 WHERE bucket_start < "
+                      "(SELECT value FROM traffic_hourly_state_v2 WHERE key = 'retention_floor');",
+                      NULL, NULL, NULL);
+    if (rc != SQLITE_OK)
+        goto CLEANUP;
+    changed |= sqlite3_changes(db) > 0;
+    rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+    if (rc == SQLITE_OK)
+        in_transaction = 0;
+CLEANUP:
+    if (stmt)
+        sqlite3_finalize(stmt);
+    if (in_transaction)
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+    sqlite3_close(db);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR("exact traffic retention failed: rc=%d\n", rc);
+        return -1;
+    }
+    return changed;
+}
+
+static int delete_exact_traffic_in_range(const char *mac, u_int32_t start, u_int32_t end)
+{
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    sqlite3_int64 first_bucket = ((sqlite3_int64)start + 3599) / 3600 * 3600;
+    sqlite3_int64 end_bucket = ((sqlite3_int64)end + 1) / 3600 * 3600;
+    char db_path[512] = {0};
+    int rc = SQLITE_OK;
+    int deleted = 0;
+
+    /* Manual legacy date filters can cut through UTC hours. Delete only
+     * buckets wholly inside that selection, and retain their dedupe keys. */
+    if (first_bucket >= end_bucket)
+        return 0;
+    build_client_visit_db_path(db_path, sizeof(db_path));
+    if (access(db_path, F_OK) != 0)
+        return 0;
+    if (open_client_visit_db(&db) != 0)
+        return 0;
+    rc = sqlite3_prepare_v2(db,
+                            mac && *mac
+                            ? "DELETE FROM traffic_hourly_v2 WHERE bucket_start >= ? AND bucket_start < ? AND mac = ? COLLATE NOCASE;"
+                            : "DELETE FROM traffic_hourly_v2 WHERE bucket_start >= ? AND bucket_start < ?;",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK ||
+        (rc = sqlite3_bind_int64(stmt, 1, first_bucket)) != SQLITE_OK ||
+        (rc = sqlite3_bind_int64(stmt, 2, end_bucket)) != SQLITE_OK ||
+        (mac && *mac && (rc = sqlite3_bind_text(stmt, 3, mac, -1, SQLITE_STATIC)) != SQLITE_OK))
+        goto CLEANUP;
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE)
+        deleted = sqlite3_changes(db);
+CLEANUP:
+    if (stmt)
+        sqlite3_finalize(stmt);
+    if (db)
+        sqlite3_close(db);
+    if (rc != SQLITE_DONE)
+        LOG_ERROR("exact traffic manual deletion failed: rc=%d\n", rc);
+    return deleted;
 }
 
 static int save_visit_record_to_db(const char *mac, visit_info_t *visit) {
@@ -1777,8 +2245,10 @@ void check_and_cleanup_history_data_by_size(void) {
         return;
     
     char history_data_size[64] = {0};
+    int record_time = fwx_uci_get_int_value(uci_ctx, "fwx.record.record_time");
     fwx_uci_get_value(uci_ctx, "fwx.record.history_data_size", history_data_size, sizeof(history_data_size));
     uci_free_context(uci_ctx);
+    cleanup_exact_traffic_history(record_time, 0);
     
     if (strlen(history_data_size) == 0) {
         return;
@@ -1821,13 +2291,11 @@ void check_and_cleanup_history_data_by_size(void) {
             cleanup_batch_count = 1;
     }
 
-    if (cleanup_batch_count <= 0) {
-        LOG_WARN("client.db cleanup skipped: invalid batch, record_count=%d\n", current_record_count);
-        return;
-    }
 
-    int deleted_count = delete_oldest_visit_records_batch(cleanup_batch_count);
-    if (deleted_count <= 0) {
+    int deleted_count = cleanup_batch_count > 0
+                        ? delete_oldest_visit_records_batch(cleanup_batch_count) : 0;
+    int exact_trimmed = cleanup_exact_traffic_history(0, 1);
+    if (deleted_count <= 0 && exact_trimmed <= 0) {
         LOG_WARN("client.db exceeds limit but no records deleted: size=%llu bytes, limit=%llu bytes\n",
                  old_size_bytes, max_size_bytes);
         return;
@@ -4538,6 +5006,10 @@ void delete_client_record_files(const char *mac, const char *start_date, const c
 
     if (delete_visits) {
         deleted_count += delete_visit_records_in_range(specific_mac ? mac : NULL, start_timestamp, end_timestamp);
+    }
+    if (delete_stats) {
+        deleted_count += delete_exact_traffic_in_range(specific_mac ? mac : NULL,
+                                                       start_timestamp, end_timestamp);
     }
 
     if (!base_dir) {

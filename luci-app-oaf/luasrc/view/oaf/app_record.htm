@@ -2,16 +2,18 @@
 <link rel="stylesheet" href="<%=resource%>/oaf/css/common.css">
 <script src="<%=resource%>/oaf/jquery-3.7.1.min.js"></script>
 <script src="<%=resource%>/oaf/oaf_icon.js"></script>
+<script type="text/javascript" src="<%=resource%>/oaf/oaf_tabs.js"></script>
 
 <div style="padding: 8px;">
     <div class="cbi-section">
         <ul class="tab-list" role="tablist">
             <li class="tab-item active" role="tab" tabindex="0" aria-selected="true" aria-controls="tab-online-records" data-tab="online-records"><%:Online Records%></li>
             <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-history-records" data-tab="history-records"><%:History Records%></li>
-            <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-traffic-stats" data-tab="traffic-stats"><%:App Traffic Statistics%></li>
+            <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-traffic-stats" data-tab="traffic-stats"><%:App Traffic Statistics%> (<%:Legacy%>)</li>
+            <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-exact-traffic" data-tab="exact-traffic"><%:Exact Hourly Traffic%></li>
         </ul>
 
-        <div class="record-traffic-hint"><%:Only observed forwarded traffic after app identification is counted. Unavailable data is shown as —; bypass downstream traffic may be unavailable.%></div>
+        <div class="record-traffic-hint" id="legacy-record-traffic-hint"><strong><%:Legacy%>:</strong> <%:Only observed forwarded traffic after app identification is counted. Unavailable data is shown as —; bypass downstream traffic may be unavailable.%></div>
 
         <div id="tab-online-records" class="tab-body active">
             <div class="record-table-scroll">
@@ -109,6 +111,11 @@
         </div>
         <div id="tab-traffic-stats" class="tab-body">
             <div class="traffic-stats-controls">
+                <label id="traffic-stats-device-label" for="q-traffic-mac"><%:Terminal MAC (optional)%></label>
+                <div class="traffic-stats-device">
+                    <input id="q-traffic-mac" class="cbi-input-text" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="traffic-stats-devices" placeholder="<%:Search device name or MAC%>" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="traffic-stats-mac-hint">
+                    <div id="traffic-stats-devices" class="traffic-stats-device-options" role="listbox" aria-labelledby="traffic-stats-device-label" hidden></div>
+                </div>
                 <label for="q-traffic-start"><%:Start time%></label>
                 <input id="q-traffic-start" class="cbi-input-text" type="datetime-local" step="1" style="width:210px;">
                 <label for="q-traffic-end"><%:End time%></label>
@@ -116,8 +123,9 @@
                 <button type="button" class="cbi-button cbi-button-action" id="btn-traffic-stats-search"><%:Search%></button>
                 <button type="button" class="cbi-button" id="btn-traffic-stats-reset"><%:Reset%></button>
             </div>
+            <div class="traffic-stats-hint" id="traffic-stats-mac-hint"><%:Search by device name or MAC, or enter a MAC manually.%> <%:Leave MAC empty to include all devices.%></div>
             <div class="traffic-stats-hint"><%:Overlapping visits are counted in full; values are not exact for the selected time range.%></div>
-            <div class="traffic-stats-hint"><%:A dash means that at least one selected visit has unknown traffic in that direction; it is not zero.%></div>
+            <div class="traffic-stats-hint"><%:≥ shows the known traffic lower bound; Incomplete marks unknown visits. A dash means no measured traffic is available.%></div>
             <div class="traffic-stats-hint" id="traffic-stats-range"></div>
             <div class="record-table-scroll">
             <table class="table cbi-section-table" id="traffic-stats-table" style="table-layout: fixed; width: 100%;">
@@ -144,6 +152,9 @@
                 <span class="record-loading" style="display:none;"><%:Loading...%></span>
                 <span class="record-error" style="display:none;"><span id="traffic-stats-error-message"><%:Load failed%></span> <button type="button" class="cbi-button" id="btn-traffic-stats-retry"><%:Refresh%></button></span>
             </div>
+        </div>
+        <div id="tab-exact-traffic" class="tab-body">
+            <%+oaf/exact_traffic%>
         </div>
     </div>
 </div>
@@ -294,6 +305,39 @@
 .traffic-stats-controls label {
     color: var(--text-color-medium, #6b7280);
 }
+.traffic-stats-device {
+    position: relative;
+    width: 280px;
+    max-width: 100%;
+}
+.traffic-stats-device input {
+    width: 100%;
+    box-sizing: border-box;
+}
+.traffic-stats-device-options {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    max-height: 240px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color-medium, #d1d5db);
+    border-radius: 4px;
+    background: var(--background-color-high, #ffffff);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.12);
+}
+.traffic-stats-device-options[hidden] { display: none; }
+.traffic-stats-device-option {
+    padding: 8px 10px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+    color: var(--text-color-high, #333);
+}
+.traffic-stats-device-option:hover,
+.traffic-stats-device-option[aria-selected="true"] {
+    background: var(--background-color-medium, #eeeeee);
+}
 .traffic-stats-hint {
     margin: 6px 0;
     color: var(--text-color-medium, #6b7280);
@@ -314,6 +358,11 @@
 #traffic-stats-table .traffic-stats-app-col { width: var(--record-app-col-width); }
 #traffic-stats-table .traffic-stats-traffic-col { width: 18%; }
 #traffic-stats-table .traffic-stats-count-col { width: 12%; }
+#traffic-stats-table .traffic-incomplete {
+    display: block;
+    color: var(--text-color-medium, #6b7280);
+    font-size: 0.8em;
+}
 </style>
 
 <script type="text/javascript">
@@ -327,9 +376,16 @@
         noData: '<%:No Data%>',
         invalidRange: '<%:Start time must not be later than end time.%>',
         invalidTime: '<%:Please enter a valid time range.%>',
+        invalidMac: '<%:Please enter a valid MAC address.%>',
+        allDevices: '<%:All devices%>',
+        macPrefix: '<%:Terminal MAC%>',
         rangePrefix: '<%:Range%>',
         wholeVisit: '<%:Whole overlapping visits are counted.%>',
-        unknownTraffic: '<%:Unknown traffic is not zero.%>'
+        incomplete: '<%:Incomplete%>',
+        unknownVisits: '<%:Unknown visits%>',
+        unknownUpVisits: '<%:Unknown upstream visits%>',
+        unknownDownVisits: '<%:Unknown downstream visits%>',
+        knownLowerBound: '<%:Known traffic is a lower bound; unknown traffic is not zero.%>'
     };
     function record_state(table, status, sentinel, url) {
         return {
@@ -353,6 +409,8 @@
         serial: 0,
         xhr: null
     };
+    var traffic_device_names = Object.create(null);
+    var traffic_displayed_range = null;
     var active_tab = 'online-records';
     var visible_frame = null;
 
@@ -380,11 +438,13 @@
         if (m > 0) return m + "m" + (r > 0 ? " " + r + "s" : "");
         return r + "s";
     }
-    function formatTraffic(bytes) {
+    function formatTraffic(bytes, lower_bound) {
+        var round = lower_bound ? Math.floor : Math.round;
         if (!bytes || bytes < 1024) return (bytes || 0) + ' B';
-        if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
-        if (bytes < 1024 * 1024 * 1024) return Math.round(bytes / (1024 * 1024)) + ' MB';
-        return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+        if (bytes < 1024 * 1024) return round(bytes / 1024) + ' KB';
+        if (bytes < 1024 * 1024 * 1024) return round(bytes / (1024 * 1024)) + ' MB';
+        var gb = bytes / (1024 * 1024 * 1024);
+        return (lower_bound ? Math.floor(gb * 100) / 100 : gb).toFixed(2) + ' GB';
     }
 
     function traffic_value_known(value) {
@@ -423,18 +483,113 @@
         $('#q-traffic-end').val(local_datetime_value(end));
     }
 
+    function load_traffic_devices() {
+        var $input = $('#q-traffic-mac');
+        var $list = $('#traffic-stats-devices');
+        var devices = [];
+        var matches = [];
+        var active = -1;
+
+        function close_options() {
+            $list.prop('hidden', true);
+            $input.attr('aria-expanded', 'false').removeAttr('aria-activedescendant');
+            active = -1;
+        }
+
+        function show_options() {
+            var query = $.trim($input.val() || '').toLowerCase();
+            matches = devices.filter(function(device) { return device.search.indexOf(query) !== -1; });
+            if (!query || text.allDevices.toLowerCase().indexOf(query) !== -1)
+                matches.unshift({ mac: '', label: text.allDevices });
+            var fragment = document.createDocumentFragment();
+            matches.forEach(function(device, index) {
+                fragment.appendChild($('<div>').addClass('traffic-stats-device-option').attr({
+                    id: 'traffic-stats-device-' + index, role: 'option',
+                    'aria-selected': 'false', 'data-index': index
+                }).text(device.label)[0]);
+            });
+            $list.empty().append(fragment).prop('hidden', !matches.length);
+            $input.attr('aria-expanded', matches.length ? 'true' : 'false').removeAttr('aria-activedescendant');
+            active = -1;
+        }
+
+        function choose_device(index) {
+            if (index < 0 || index >= matches.length) return;
+            $input.val(matches[index].mac);
+            close_options();
+        }
+
+        $input.on('focus click input', show_options).on('blur', close_options).on('keydown', function(event) {
+            if (event.isComposing || event.originalEvent && event.originalEvent.isComposing) return;
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                if ($list.prop('hidden')) show_options();
+                if (!matches.length) return;
+                event.preventDefault();
+                var down = event.key === 'ArrowDown';
+                active = active < 0 ? (down ? 0 : matches.length - 1)
+                    : (active + (down ? 1 : -1) + matches.length) % matches.length;
+                var $option = $list.children().attr('aria-selected', 'false').eq(active).attr('aria-selected', 'true');
+                $input.attr('aria-activedescendant', $option.attr('id'));
+                $option[0].scrollIntoView({ block: 'nearest' });
+            } else if (event.key === 'Enter' && !$list.prop('hidden') && active >= 0) {
+                event.preventDefault();
+                choose_device(active);
+            } else if (event.key === 'Escape') {
+                if (!$list.prop('hidden')) event.preventDefault();
+                close_options();
+            }
+        });
+        $list.on('mousedown', function(event) {
+            event.preventDefault();
+        }).on('click', '[role="option"]', function() {
+            choose_device(Number($(this).attr('data-index')));
+        });
+
+        $.ajax({
+            url: "<%=url('admin/services/oaf/api/get_all_users')%>",
+            // Page zero is the existing unpaginated API, not just its first page.
+            data: { flag: 2, page: 0 },
+            dataType: 'json',
+            timeout: 15000
+        }).done(function(resp) {
+            var users = resp && resp.data && resp.data.list;
+            if (!Array.isArray(users)) return;
+            users.forEach(function(user) {
+                if (!user) return;
+                var mac = $.trim(String(user.mac || '')).toLowerCase();
+                if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(mac)) return;
+                var name = $.trim(String(user.nickname || ''));
+                if (!name) {
+                    name = $.trim(String(user.hostname || ''));
+                    if (name === '*') name = '';
+                }
+                if (name) traffic_device_names[mac] = name;
+                devices.push({ mac: mac, label: name ? name + ' (' + mac + ')' : mac,
+                    search: (name + ' ' + mac).toLowerCase() });
+            });
+            if (traffic_displayed_range) update_traffic_stats_range(traffic_displayed_range);
+            if (document.activeElement === $input[0]) show_options();
+        });
+        // Suggestions are optional: failures leave manual MAC entry and all-device queries available.
+    }
+
     function traffic_stats_filters() {
+        var mac = $.trim($('#q-traffic-mac').val() || '').toLowerCase();
         var start_value = $('#q-traffic-start').val();
         var end_value = $('#q-traffic-end').val();
         var start_ms = start_value ? new Date(start_value).getTime() : null;
         var end_ms = end_value ? new Date(end_value).getTime() : null;
         var filters = {};
+        if (mac && !/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(mac))
+            return { error: text.invalidMac };
         if ((start_value && (!isFinite(start_ms) || start_ms < 0 || start_ms > 4294967295000)) ||
             (end_value && (!isFinite(end_ms) || end_ms < 0 || end_ms > 4294967295000))) {
             return { error: text.invalidTime };
         }
         if (start_value && end_value && start_ms > end_ms)
             return { error: text.invalidRange };
+        if (mac)
+            filters.mac = mac;
         if (start_value)
             filters.start_time = Math.floor(start_ms / 1000);
         if (end_value)
@@ -455,8 +610,30 @@
     }
 
     function set_traffic_stats_controls_disabled(disabled) {
-        $('#q-traffic-start, #q-traffic-end, #btn-traffic-stats-search, #btn-traffic-stats-reset, #btn-traffic-stats-retry')
+        $('#q-traffic-mac, #q-traffic-start, #q-traffic-end, #btn-traffic-stats-search, #btn-traffic-stats-reset, #btn-traffic-stats-retry')
             .prop('disabled', !!disabled);
+    }
+
+    function render_aggregate_traffic_cell(item, direction) {
+        var records = Number(item.record_count || 0);
+        var unknown_up = Number(item.unknown_up_count || 0);
+        var unknown_down = Number(item.unknown_down_count || 0);
+        var unknown = direction === 'up' ? unknown_up : unknown_down;
+        var incomplete = direction === 'total' ? unknown_up > 0 || unknown_down > 0 : unknown > 0;
+        var has_known = direction === 'total' ? records > unknown_up || records > unknown_down : records > unknown;
+        var value = item['known_' + direction + '_bytes'];
+        var show_value = has_known && traffic_value_known(value);
+        var $cell = $('<td>').addClass('td record-traffic-cell').attr('data-traffic-direction', direction);
+        $cell.text(show_value ? (incomplete ? '≥ ' : '') + formatTraffic(Number(value), incomplete) : '—');
+        if (incomplete) {
+            var unknown_text = direction === 'total'
+                ? text.unknownUpVisits + ': ' + unknown_up + '/' + records + '; '
+                    + text.unknownDownVisits + ': ' + unknown_down + '/' + records
+                : text.unknownVisits + ': ' + unknown + '/' + records;
+            $cell.attr('title', unknown_text + '. ' + text.knownLowerBound)
+                .append($('<span>').addClass('traffic-incomplete').text(text.incomplete));
+        }
+        return $cell;
     }
 
     function render_traffic_stats(list) {
@@ -475,21 +652,12 @@
         list.forEach(function(item) {
             var app_id = item.appid == null ? '' : item.appid;
             var app_name = app_display_name(app_id, item.name || '');
-            var $row = $('<tr>').addClass('tr');
+            var $row = $('<tr>').addClass('tr').attr('data-appid', app_id);
             var $app_cell = $('<td>').addClass('td record-app-td');
-            var $up_cell = $('<td>').addClass('td record-traffic-cell')
-                .text(format_record_traffic(item.up_bytes));
-            var $down_cell = $('<td>').addClass('td record-traffic-cell')
-                .text(format_record_traffic(item.down_bytes));
-            var $total_cell = $('<td>').addClass('td record-traffic-cell')
-                .text(format_record_traffic(item.total_bytes));
+            var $up_cell = render_aggregate_traffic_cell(item, 'up');
+            var $down_cell = render_aggregate_traffic_cell(item, 'down');
+            var $total_cell = render_aggregate_traffic_cell(item, 'total');
             render_app_cell($app_cell, app_id, app_name, item.icon);
-            if (Number(item.unknown_up_count || 0) > 0)
-                $up_cell.attr('title', text.unknownTraffic);
-            if (Number(item.unknown_down_count || 0) > 0)
-                $down_cell.attr('title', text.unknownTraffic);
-            if (Number(item.unknown_up_count || 0) > 0 || Number(item.unknown_down_count || 0) > 0)
-                $total_cell.attr('title', text.unknownTraffic);
             $row.append($app_cell)
                 .append($up_cell)
                 .append($down_cell)
@@ -502,6 +670,10 @@
 
     function update_traffic_stats_range(resp) {
         var range = resp && resp.range ? resp.range : resp;
+        traffic_displayed_range = range;
+        var mac = range && range.mac ? String(range.mac).toLowerCase() : '';
+        var name = mac ? traffic_device_names[mac] : '';
+        var scope = mac ? (name ? name + ' (' + mac + ')' : text.macPrefix + ': ' + mac) : text.allDevices;
         var has_start = range && Object.prototype.hasOwnProperty.call(range, 'start_time');
         var has_end = range && Object.prototype.hasOwnProperty.call(range, 'end_time');
         var start = has_start ? Number(range.start_time) : 0;
@@ -510,7 +682,7 @@
             ? local_datetime_value(new Date(start * 1000)).replace('T', ' ') : '<%:Any time%>';
         var end_text = has_end && isFinite(end) && end >= 0
             ? local_datetime_value(new Date(end * 1000)).replace('T', ' ') : '<%:Any time%>';
-        $('#traffic-stats-range').text(text.rangePrefix + ': ' + start_text + ' - ' + end_text + ' (' + text.wholeVisit + ')');
+        $('#traffic-stats-range').text(scope + ' | ' + text.rangePrefix + ': ' + start_text + ' - ' + end_text + ' (' + text.wholeVisit + ')');
     }
 
     function fail_traffic_stats(message) {
@@ -531,6 +703,7 @@
         traffic_stats_state.error = false;
         traffic_stats_clear_rows();
         $('#traffic-stats-range').empty();
+        traffic_displayed_range = null;
         set_traffic_stats_state('idle');
         if (filters.error) {
             set_traffic_stats_controls_disabled(false);
@@ -551,6 +724,9 @@
             if (serial !== traffic_stats_state.serial)
                 return;
             list = resp && resp.apps;
+            // The LuCI ubus bridge can encode an empty array as an empty object.
+            if (list && typeof list === 'object' && !Array.isArray(list) && Object.keys(list).length === 0)
+                list = [];
             if (!resp || !Array.isArray(list)) {
                 fail_traffic_stats('<%:Load failed%>');
                 return;
@@ -786,14 +962,20 @@
     }
 
     function switch_tab(tab_id) {
-        if (tab_id !== 'online-records' && tab_id !== 'history-records' && tab_id !== 'traffic-stats') return;
+        if (tab_id !== 'online-records' && tab_id !== 'history-records' && tab_id !== 'traffic-stats' && tab_id !== 'exact-traffic') return;
         active_tab = tab_id;
         $('.tab-item').removeClass('active').attr('aria-selected', 'false');
         $('.tab-item[data-tab="' + tab_id + '"]').addClass('active').attr('aria-selected', 'true');
         $('.tab-body').removeClass('active');
         $('#tab-' + tab_id).addClass('active');
+        $('#legacy-record-traffic-hint').toggle(tab_id !== 'exact-traffic');
+        if (tab_id === 'exact-traffic') {
+            window.OAFExactTraffic.ensureLoaded();
+            return;
+        }
         if (tab_id === 'traffic-stats') {
             if (!traffic_stats_state.started) {
+                load_traffic_devices();
                 set_default_traffic_range();
                 request_traffic_stats();
             }
@@ -810,12 +992,24 @@
         }
     }
 
+    var tab_state = window.OAFTabState.create({
+        ids: ['online-records', 'history-records', 'traffic-stats', 'exact-traffic'],
+        defaultId: 'online-records',
+        storageKey: 'oaf.app-record.active-tab',
+        onNavigate: switch_tab
+    });
+
+    function select_tab(tab_id) {
+        switch_tab(tab_id);
+        tab_state.select(tab_id);
+    }
+
     $('.tab-item').on('click', function() {
-        switch_tab($(this).attr('data-tab'));
+        select_tab($(this).attr('data-tab'));
     }).on('keydown', function(event) {
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
-        switch_tab($(this).attr('data-tab'));
+        select_tab($(this).attr('data-tab'));
     });
     $('#btn-history-search').on('click', reset_history_records);
     $('#btn-history-reset').on('click', function() {
@@ -824,6 +1018,7 @@
     });
     $('#btn-traffic-stats-search').on('click', request_traffic_stats);
     $('#btn-traffic-stats-reset').on('click', function() {
+        $('#q-traffic-mac').val('');
         set_default_traffic_range();
         request_traffic_stats();
     });
@@ -853,9 +1048,12 @@
 
     set_default_traffic_range();
     var urlParams = new URLSearchParams(window.location.search);
-    var initial_tab = urlParams.get('tab');
-    switch_tab(initial_tab === 'history' ? 'history-records'
-        : (initial_tab === 'traffic' ? 'traffic-stats' : 'online-records'));
+    var query_tab = urlParams.get('tab');
+    var preferred_tab = query_tab === 'history' ? 'history-records'
+        : (query_tab === 'traffic' ? 'traffic-stats' : (query_tab === 'exact' ? 'exact-traffic' : undefined));
+    var initial_tab = tab_state.initial(preferred_tab);
+    switch_tab(initial_tab);
+    tab_state.select(initial_tab);
 })();
 //]]>
 </script>

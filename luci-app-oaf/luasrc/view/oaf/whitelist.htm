@@ -8,6 +8,7 @@ local has_record = nfs.access("/etc/config/fwx_record")
 <link rel="stylesheet" href="<%=resource%>/oaf/css/common.css?v=20261001-darkfix2">
 <script src="<%=resource%>/oaf/jquery-3.7.1.min.js"></script>
 <script src="<%=resource%>/oaf/common.js?v=20261001-darkfix2"></script>
+<script src="<%=resource%>/oaf/oaf_tabs.js"></script>
 
 <style>
     .oaf-whitelist-tip {
@@ -375,6 +376,7 @@ whitelistTypes.record = {
 
 var activeWhitelistType = null;
 var modalWhitelistType = null;
+var whitelistTabState = null;
 
 function escapeWhitelistHtml(value) {
     return $('<div>').text(value == null ? '' : String(value)).html();
@@ -394,6 +396,9 @@ function switchWhitelistTab(type) {
     $('.oaf-whitelist-tab[data-type="' + type + '"]').addClass('active').attr('aria-selected', 'true');
     $('.oaf-whitelist-panel').removeClass('active');
     $('#' + whitelistTypes[type].panelId).addClass('active');
+    if (whitelistTabState) {
+        whitelistTabState.select(type);
+    }
 }
 
 function loadWhitelist(type) {
@@ -583,7 +588,13 @@ $(function() {
         return;
     }
 
-    switchWhitelistTab(types[0]);
+    whitelistTabState = window.OAFTabState.create({
+        ids: types,
+        defaultId: types[0],
+        storageKey: 'oaf.whitelist.active-tab',
+        onNavigate: switchWhitelistTab
+    });
+    switchWhitelistTab(whitelistTabState.initial());
     types.forEach(function(type) {
         loadWhitelist(type);
         loadWhitelistUsers(type);

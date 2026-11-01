@@ -41,6 +41,7 @@
 #include "fwx_config.h"
 #include "fwx_mac_filter.h"
 #include "fwx_app_filter.h"
+#include "fwx_traffic.h"
 
 
 MODULE_LICENSE("GPL");
@@ -2697,7 +2698,8 @@ int af_send_msg_to_user(char *pbuf, uint16_t len)
 	struct af_msg_hdr *hdr = NULL;
 	char *p_data = NULL;
 	int ret;
-	if (len >= MAX_FWX_NL_MSG_LEN)
+
+	if (!fwx_sock || len >= MAX_FWX_NL_MSG_LEN)
 		return -1;
 
 	msg_buf = kmalloc(buf_len, GFP_ATOMIC);
@@ -2779,9 +2781,11 @@ static void fwx_netlink_msg_rcv(struct sk_buff *skb)
 			return;
 		udata = umsg + sizeof(struct af_msg_hdr);
 
+		if (udata && af_traffic_v2_handle_ack(udata, af_hdr->len))
+			return;
 		if (udata)
 			fwx_user_msg_handle(udata, af_hdr->len);
-	}
+}
 }
 
 static int netlink_fwx_init(void)
@@ -2815,7 +2819,16 @@ static int __init fwx_init(void)
 	}
 	af_log_init();
 	init_af_client_procfs();
-	af_client_init();
+	err = af_client_init();
+	if (err) {
+		finit_af_client_procfs();
+		remove_af_client_base_dir();
+		af_log_exit();
+		netlink_kernel_release(fwx_sock);
+		fwx_sock = NULL;
+		af_conn_exit();
+		return err;
+	}
 	af_active_app_init_procfs();
 	af_active_host_init_procfs();
 	fwx_register_dev();

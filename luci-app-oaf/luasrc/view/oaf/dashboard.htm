@@ -1422,16 +1422,73 @@
             <div class="mini" role="link" tabindex="0" aria-label="<%:Online App%>">
                 <div class="stat-head">
                     <span class="stat-label"><%:Online App%></span>
+                    <span class="stat-icon icon-application" aria-hidden="true"></span>
+                </div>
+                <div id="app-count" class="top-stat-value">0</div>
+                <span class="tooltip">
+                    <div class="tooltip-row"><span class="tooltip-label"><%:Online App%>:</span><span class="tooltip-value" id="app-online-count">0</span></div>
+                    <div class="tooltip-row"><span class="tooltip-label"><%:Offline App%>:</span><span class="tooltip-value" id="app-offline-count">0</span></div>
                 </span>
             </div>
             <div class="mini" role="link" tabindex="0" aria-label="<%:Online User%>">
                 <div class="stat-head">
                     <span class="stat-label"><%:Online User%></span>
+                    <span class="stat-icon icon-user" aria-hidden="true"></span>
+                </div>
+                <div id="mini-online" class="top-stat-value">0</div>
+                <span class="tooltip">
+                    <div class="tooltip-row"><span class="tooltip-label"><%:Online User%>:</span><span class="tooltip-value" id="user-online-count">0</span></div>
+                    <div class="tooltip-row"><span class="tooltip-label"><%:Offline User%>:</span><span class="tooltip-value" id="user-offline-count">0</span></div>
                 </span>
             </div>
             <div class="mini" role="link" tabindex="0" aria-label="<%:Filter Rules%>">
                 <div class="stat-head">
                     <span class="stat-label"><%:Filter Rules%></span>
+                    <span class="stat-icon icon-connect" aria-hidden="true"></span>
+                </div>
+                <div id="mini-rule-count" class="top-stat-value">0</div>
+                <span class="tooltip">
+                    <div class="tooltip-row"><span class="tooltip-label"><%:App Filter Rules%>:</span><span class="tooltip-value" id="rule-af-count">0</span></div>
+                    <div class="tooltip-row"><span class="tooltip-label"><%:Access Control Rules%>:</span><span class="tooltip-value" id="rule-mf-count">0</span></div>
+                </span>
+            </div>
+            <div class="mini">
+                <div class="stat-head">
+                    <span class="stat-label"><%:Today Traffic%></span>
+                    <span class="stat-icon icon-flow" aria-hidden="true"></span>
+                </div>
+                <div id="mini-traffic" class="top-stat-value">0MB</div>
+            </div>
+        </div>
+
+        <div class="main-grid">
+            <div class="card full" id="history-traffic-card">
+                <div class="card-title-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <div class="mini-title"><%:Traffic Statistics%></div>
+                    <span class="app-stats-select-wrap">
+                        <select id="traffic-stats-select" class="app-stats-select">
+                            <option value="today" selected><%:Today%></option>
+                            <option value="days30"><%:Last 30 Days%></option>
+                        </select>
+                    </span>
+                </div>
+                <div id="history-traffic-chart" class="chart-container"></div>
+            </div>
+            <div class="card full" id="active-app-card">
+                <div class="mini-title"><%:Visiting%></div>
+                <div class="app-grid" id="active-apps"></div>
+            </div>
+            <div class="card" id="pie-app-card">
+                <div class="card-title-row" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <div class="mini-title"><%:App Duration Statistics%></div>
+                    <span class="app-stats-select-wrap">
+                        <select id="app-stats-select" class="app-stats-select">
+                            <option value="hourly"><%:Last Hour%></option>
+                            <option value="daily" selected><%:Today%></option>
+                        </select>
+                    </span>
+                </div>
+                <div id="pie-app" class="chart-container"></div>
             </div>
             <div class="card" id="bar-user-traffic-card">
                 <div class="mini-title" id="bar-user-traffic-title"><%:User Traffic Top8%></div>
@@ -1975,86 +2032,6 @@
             console.error('Failed to request traffic stats data:', e);
         }
     }
-
-    function dismissAccelerationWarning(){
-        $('#acceleration-warning').hide();
-        new XHR().post('<%=url("admin/services/oaf/api/dashboard/set_notice_status")%>', {}, function() {});
-    }
-
-    function bindTopStatNav(){
-        $('#app-count').closest('.mini').on('click', function(){
-            location.href = '<%=url("admin/services/oaf/app_record")%>';
-        });
-        $('#mini-online').closest('.mini').on('click', function(){
-            location.href = '<%=url("admin/services/oaf/users/list")%>';
-        });
-        $('#mini-rule-count').closest('.mini').on('click', function(){
-            var afCount = window._afRuleCount || 0;
-            var mfCount = window._mfRuleCount || 0;
-            if (afCount > 0 || mfCount === 0) {
-                location.href = '<%=url("admin/services/oaf/app_filter/rules")%>';
-            } else {
-                location.href = '<%=url("admin/services/oaf/mac_filter/rules")%>';
-            }
-        });
-        $('#oaf-feature-version').on('click', function(){
-            location.href = '<%=url("admin/services/oaf/feature")%>';
-        });
-        $('#oaf-app-record-count').on('click', function(){
-            location.href = '<%=url("admin/services/oaf/app_record")%>?tab=history';
-        });
-        $('.top-stats .mini[role="link"]').on('keydown.topStats', function(event) {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            $(this).trigger('click');
-        });
-        $('.compact-value[role="link"]').on('keydown.compactNav', function(event) {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            $(this).trigger('click');
-        });
-        $('.top-stats .mini').on('mousemove', function(e) {
-            var $tip = $(this).find('.tooltip');
-            if (!$tip.length) {
-                return;
-            }
-            var rect = this.getBoundingClientRect();
-            var tipW = 190;
-            var tipH = 90;
-            var x = e.clientX - rect.left + 12;
-            if (e.clientX + 12 + tipW > window.innerWidth - 8) {
-                x = e.clientX - rect.left - 12 - tipW;
-            }
-            var y = e.clientY - rect.top + 12;
-            if (e.clientY + 12 + tipH > window.innerHeight - 8) {
-                y = e.clientY - rect.top - 12 - tipH;
-            }
-            $tip.css({ left: x, top: y }).show();
-        }).on('mouseleave', function() {
-            $(this).find('.tooltip').hide();
-        });
-    }
-
-    function fetchInitStatusOnce(){
-        if (initStatusFetched) {
-            return;
-        }
-        initStatusFetched = true;
-        new XHR().get('<%=url("admin/services/oaf/api/dashboard/get_init_status")%>', null, function(x, data){
-            if(!data){
-                return;
-            }
-            try {
-                var json = typeof data === 'string' ? JSON.parse(data) : data;
-                shouldShowModeSwitchGuide = parseInt(json.init_status, 10) === 0;
-                updateModeSwitchGuide();
-            } catch(e) {
-                console.error('Failed to parse init status data:', e);
-            }
-        });
-    }
-
-
 
     function isEmptyValue(value) {
         return value === undefined || value === null || value === '' || value === '0.0.0.0';
@@ -2674,6 +2651,7 @@
 
     var currentAppStatsType = 'daily';
     var currentTrafficStatsType = 'today';
+    var dashboardCommonRequestSerial = 0;
     var historyTrafficRequestSerial = 0;
     var dailyTopUsersRequestSerial = 0;
     var activeUsersRequestSerial = 0;
@@ -3579,6 +3557,21 @@
             var name = nameInfo.display || '--';
             var upRate = formatRate(user.up_rate || 0);
             var downRate = formatRate(user.down_rate || 0);
+            var app = (user.app && user.app.trim() !== '') ? user.app : '--';
+            var mac = user.mac || '';
+            var alias = (user.nickname && String(user.nickname).trim() !== '') ? user.nickname : ((user.hostname && String(user.hostname).trim() !== '') ? user.hostname : '');
+            var macDisplay = mac;
+            if (alias) {
+                macDisplay = mac + ' (' + alias + ')';
+            }
+            var tooltipHtml =
+                '<div class="tooltip-row"><span class="tooltip-label">' + _MACAddress + ':</span><span class="tooltip-value">' + escapeHtml(macDisplay) + '</span></div>' +
+                '<div class="tooltip-row"><span class="tooltip-label">' + _IP + ':</span><span class="tooltip-value">' + escapeHtml(user.ip || '--') + '</span></div>' +
+                '<div class="tooltip-row"><span class="tooltip-label">' + _UpstreamRate + ':</span><span class="tooltip-value">' + escapeHtml(upRate) + '</span></div>' +
+                '<div class="tooltip-row"><span class="tooltip-label">' + _DownstreamRate + ':</span><span class="tooltip-value">' + escapeHtml(downRate) + '</span></div>' +
+                '<div class="tooltip-row"><span class="tooltip-label">' + _UpstreamTraffic + ':</span><span class="tooltip-value">' + escapeHtml(formatTraffic(user.today_up_bytes || 0)) + '</span></div>' +
+                '<div class="tooltip-row"><span class="tooltip-label">' + _DownstreamTraffic + ':</span><span class="tooltip-value">' + escapeHtml(formatTraffic(user.today_down_bytes || 0)) + '</span></div>' +
+                '<div class="tooltip-row"><span class="tooltip-label">' + _CurrentApp + ':</span><span class="tooltip-value">' + escapeHtml(app) + '</span></div>' +
                 '<div class="tooltip-row"><span class="tooltip-label">' + _CurrentURL + ':</span><span class="tooltip-value">' + escapeHtml(user.url || '--') + '</span></div>';
 
             return {

@@ -27,6 +27,44 @@
 extern traffic_stat_t g_global_hourly_traffic[HOURS_PER_DAY];
 extern u_int32_t g_global_traffic_date;
 
+static int fwx_send_exact_traffic_ack(int fd, struct json_object *root)
+{
+    struct json_object *field = NULL;
+    struct json_object *ack = NULL;
+    const char *boot_id;
+    sqlite3_int64 seq;
+    const char *payload;
+    int ret;
+
+    if (fd < 0 || !root || !json_object_is_type(root, json_type_object) ||
+        !json_object_object_get_ex(root, "boot_id", &field) ||
+        !json_object_is_type(field, json_type_string) ||
+        json_object_get_string_len(field) != 32)
+        return -1;
+    boot_id = json_object_get_string(field);
+    if (!boot_id || memchr(boot_id, '\0', 32) ||
+        !json_object_object_get_ex(root, "seq", &field) ||
+        !json_object_is_type(field, json_type_int) ||
+        (seq = json_object_get_int64(field)) <= 0)
+        return -1;
+
+    ack = json_object_new_object();
+    if (!ack)
+        return -1;
+    json_object_object_add(ack, "v", json_object_new_int(2));
+    json_object_object_add(ack, "type", json_object_new_string("traffic_ack"));
+    json_object_object_add(ack, "boot_id", json_object_new_string(boot_id));
+    json_object_object_add(ack, "seq", json_object_new_int64(seq));
+    payload = json_object_to_json_string(ack);
+    ret = payload ? fwx_nl_send_msg_to_kernel(fd, (void *)payload,
+                                               (int)strlen(payload)) : -1;
+    if (ret < 0)
+        LOG_ERROR("failed to send exact traffic ACK boot=%s seq=%lld\n",
+                  boot_id, (long long)seq);
+    json_object_put(ack);
+    return ret;
+}
+
 void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
 {
     int ret;
@@ -61,7 +99,8 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         return;
     }
 
-    if (ret < (int)(sizeof(struct nlmsghdr) + sizeof(struct fwx_nl_msg_hdr)) ||
+    if ((msg.msg_flags & MSG_TRUNC) ||
+        ret < (int)(sizeof(struct nlmsghdr) + sizeof(struct fwx_nl_msg_hdr)) ||
         ret >= (int)sizeof(buf))
     {
         printf("netlink msg size invalid %d\n", ret);
@@ -71,6 +110,11 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
     buf[ret] = '\0';
 
     h = (struct nlmsghdr *)buf;
+    if (h->nlmsg_len < sizeof(struct nlmsghdr) + sizeof(struct fwx_nl_msg_hdr) ||
+        h->nlmsg_len > (unsigned int)ret) {
+        LOG_ERROR("netlink frame length invalid\n");
+        return;
+    }
     char *kmsg = (char *)NLMSG_DATA(h);
     struct fwx_nl_msg_hdr *af_hdr = (struct fwx_nl_msg_hdr *)kmsg;
     if (af_hdr->magic != 0xa0b0c0d0)
@@ -79,17 +123,46 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         return;
     }
 
-    if (af_hdr->len <= 0 || af_hdr->len >= MAX_FWX_NETLINK_MSG_LEN)
+    if (af_hdr->len <= 0 || af_hdr->len >= MAX_FWX_NETLINK_MSG_LEN ||
+        (unsigned int)af_hdr->len > h->nlmsg_len - sizeof(struct nlmsghdr) - sizeof(*af_hdr))
     {
         printf("data len error\n");
         return;
     }
 
     char *kdata = kmsg + sizeof(struct fwx_nl_msg_hdr);
+    kdata[af_hdr->len] = '\0';
     struct json_object *root = json_tokener_parse(kdata);
     if (!root)
     {
         LOG_ERROR("parse json failed:%s", kdata);
+        return;
+    }
+
+    /* v2 facts bypass client limits, local-midnight suppression, visits and
+     * legacy terminal/hourly counters. They are persisted exactly once at
+     * their source UTC bucket; unknown appid 0 is a first-class fact. */
+    struct json_object *version_obj = NULL;
+    struct json_object *traffic_type = NULL;
+    if (json_object_object_get_ex(root, "v", &version_obj) ||
+        (json_object_object_get_ex(root, "type", &traffic_type) &&
+         json_object_is_type(traffic_type, json_type_string) &&
+         strcmp(json_object_get_string(traffic_type), "traffic_delta") == 0)) {
+        int apply_result;
+
+        if (nladdr.nl_pid != 0) {
+            LOG_ERROR("exact traffic report received from non-kernel peer\n");
+        } else {
+            apply_result = apply_exact_traffic_json(root);
+            if (apply_result < 0) {
+                LOG_ERROR("exact traffic report rejected or not committed\n");
+            } else if (fwx_send_exact_traffic_ack(u->fd, root) < 0) {
+                /* Keep the kernel batch inflight; it will retry until this
+                 * acknowledgement is delivered after the next receive. */
+                LOG_ERROR("exact traffic commit ACK failed\n");
+            }
+        }
+        json_object_put(root);
         return;
     }
 

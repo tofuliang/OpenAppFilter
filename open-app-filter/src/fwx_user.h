@@ -31,6 +31,7 @@
 #define MAX_RECENT_APPS 5
 #define MAX_USER_RECORDS 4096
 #define MAX_APP_TRAFFIC_ITEMS 64
+#define MAX_EXACT_TRAFFIC_ITEMS 64
 
 
 typedef struct visit_info
@@ -196,6 +197,8 @@ client_node_t *find_client_node(const char *mac);
 void client_foreach(void *arg, iter_func iter);
 void add_visit_info_node(struct list_head *visit_list, visit_info_t *node);
 int apply_visit_traffic_json(client_node_t *node, struct json_object *root, struct timeval *cur_time);
+/* Returns 0 for a committed v2 batch, 1 for duplicate/expired, -1 on error. */
+int apply_exact_traffic_json(struct json_object *root);
 void add_visit_json_traffic(struct json_object *item, const visit_info_t *visit);
 void add_visit_json_traffic_row(struct json_object *item, sqlite3_stmt *stmt, int up_col, int down_col);
 void check_client_visit_info_expire(void);

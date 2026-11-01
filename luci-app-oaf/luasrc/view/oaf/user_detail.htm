@@ -3,21 +3,18 @@
 <script type="text/javascript" src="<%=resource%>/oaf/jquery-3.7.1.min.js"></script>
 <script type="text/javascript" src="<%=resource%>/oaf/oaf_icon.js"></script>
 <script type="text/javascript" src="<%=resource%>/oaf/echarts.min.js?v=5.0"></script>
+<script type="text/javascript" src="<%=resource%>/oaf/oaf_tabs.js"></script>
 
 <script type="text/javascript">//<![CDATA[
 	const FWX_ECHART_RENDERER = 'svg';
+    const USER_DETAIL_TAB_STORAGE_PREFIX = 'oaf.user-detail.active-tab.';
+    let user_detail_tab_state = null;
     let visit_time_data = [];
     let visit_page_size = 15;
     let visit_records_state = {
         nextPage: 1,
-        loadedPages: 0,
         records: [],
-        seen: Object.create(null),
-        errorMode: 'page',
-        refreshPending: false,
         pagePending: false,
-        refreshCycle: null,
-        refreshing: false,
         serial: 0,
         xhr: null
     };
@@ -28,7 +25,16 @@
     let hourlyAppsChart = null;
     let hourlyStatsData = null;
     let appTimeChart = null;
-    let visit_refresh_timer = null;
+    let app_time_request_generation = 0;
+    let app_traffic_state = {
+        started: false,
+        loading: false,
+        error: false,
+        generation: 0,
+        xhr: null
+    };
+    let hourly_stats_request_generation = 0;
+    let behavior_rules_request_generation = 0;
     let current_nickname = '';
     let current_hostname = '';
     let nickname_editing = false;
@@ -155,25 +161,22 @@
         }
     }
 	
-	function loadUserDetailData() {
-		if (!mac) return;
-		
-		loadUserBasicInfo();
-	
-		var activeTab = document.querySelector('.tab-body.active');
-		if (activeTab) {
-			var tabId = activeTab.id;
-			if (tabId === 'tab-app-duration') {
-				loadAppVisitTime();
-			} else if (tabId === 'tab-traffic-statistics' || tabId === 'tab-app-ranking') {
-				loadHourlyStatsData();
-			} else if (tabId === 'tab-behavior-rules') {
-				loadBehaviorRules();
-			} else if (tabId === 'tab-visit-records') {
-                loadVisitListData();
-			}
-		}
-	}
+    function loadUserDetailData() {
+        if (!mac) return;
+        user_detail_tab_state = window.OAFTabState.create({
+            ids: Array.prototype.map.call(document.querySelectorAll('.tab-list .tab-item[aria-controls]'), function(item) {
+                return item.getAttribute('aria-controls');
+            }).filter(function(tabId) {
+                return !!getUserDetailTabItem(tabId);
+            }),
+            defaultId: 'tab-user-info',
+            storageKey: USER_DETAIL_TAB_STORAGE_PREFIX + mac.toLowerCase(),
+            onNavigate: function(tabId) { showTabContent(tabId); }
+        });
+        var tabId = user_detail_tab_state.initial();
+        showTabContent(tabId);
+        if (tabId !== 'tab-user-info') loadUserBasicInfo();
+    }
 	
     function loadUserBasicInfo() {
         var user;
@@ -483,44 +486,133 @@
 	function loadAppVisitTime() {
 		if (!mac) return;
 		var tabAppDuration = document.getElementById('tab-app-duration');
-		var isVisible = tabAppDuration && (tabAppDuration.classList.contains('active') || window.getComputedStyle(tabAppDuration).display !== 'none');
-		if (!isVisible) {
-			return;
-		}
+        if (!tabAppDuration || !tabAppDuration.classList.contains('active')) return;
+        var requestGeneration = ++app_time_request_generation;
         new XHR().get("<%=url('admin/services/oaf/api/dev_visit_time')%>/" + encodeURIComponent(mac), null,
 			function (x, st) {
-				visit_time_data = st;
-				display_app_visit_view(visit_time_data);
+                if (requestGeneration !== app_time_request_generation || !Array.isArray(st)) return;
+                visit_time_data = st;
+                if (tabAppDuration.classList.contains('active')) display_app_visit_view(visit_time_data);
 			}
 		);
 	}
+
+    function set_app_traffic_load_state(kind) {
+        var status = document.getElementById('app-traffic-state');
+        if (!status) return;
+        status.querySelector('.app-traffic-loading').style.display = kind === 'loading' ? '' : 'none';
+        status.querySelector('.app-traffic-error').style.display = kind === 'error' ? '' : 'none';
+        document.getElementById('app-traffic-retry').disabled = kind === 'loading';
+    }
+
+    function render_app_traffic_value(cell, item, direction) {
+        var records = Number(item.record_count || 0);
+        var unknownUp = Number(item.unknown_up_count || 0);
+        var unknownDown = Number(item.unknown_down_count || 0);
+        var unknown = direction === 'up' ? unknownUp : unknownDown;
+        var incomplete = direction === 'total' ? unknownUp > 0 || unknownDown > 0 : unknown > 0;
+        var hasKnown = direction === 'total' ? records > unknownUp || records > unknownDown : records > unknown;
+        var value = item['known_' + direction + '_bytes'];
+        var showValue = hasKnown && traffic_value_known(value);
+        cell.className = 'td app-traffic-value';
+        cell.setAttribute('data-traffic-direction', direction);
+        cell.textContent = showValue ? (incomplete ? '≥ ' : '') + formatTraffic(Number(value), incomplete) : '—';
+        if (incomplete) {
+            var unknownText = direction === 'total'
+                ? '<%:Unknown upstream visits%>: ' + unknownUp + '/' + records + '; '
+                    + '<%:Unknown downstream visits%>: ' + unknownDown + '/' + records
+                : '<%:Unknown visits%>: ' + unknown + '/' + records;
+            cell.title = unknownText + '. <%:Known traffic is a lower bound; unknown traffic is not zero.%>';
+            var marker = document.createElement('span');
+            marker.className = 'traffic-incomplete';
+            marker.textContent = '<%:Incomplete%>';
+            cell.appendChild(marker);
+        }
+    }
+
+    function render_app_traffic_stats(apps) {
+        var tbody = document.getElementById('app-traffic-tbody');
+        if (!tbody) return;
+        tbody.textContent = '';
+        if (!apps.length) {
+            var emptyRow = tbody.insertRow(-1);
+            emptyRow.className = 'tr';
+            var emptyCell = emptyRow.insertCell(-1);
+            emptyCell.className = 'td app-traffic-empty';
+            emptyCell.colSpan = 4;
+            emptyCell.textContent = '<%:No records%>';
+            return;
+        }
+        var fragment = document.createDocumentFragment();
+        apps.forEach(function(item) {
+            var row = document.createElement('tr');
+            row.className = 'tr';
+            row.setAttribute('data-appid', item.appid == null ? '' : String(item.appid));
+            var appCell = row.insertCell(-1);
+            appCell.className = 'td';
+            update_visit_app_cell(appCell, item);
+            ['up', 'down', 'total'].forEach(function(direction) {
+                render_app_traffic_value(row.insertCell(-1), item, direction);
+            });
+            fragment.appendChild(row);
+        });
+        tbody.appendChild(fragment);
+    }
+
+    function fail_app_traffic_stats() {
+        app_traffic_state.error = true;
+        set_app_traffic_load_state('error');
+    }
+
+    function loadAppTrafficStats() {
+        var tab = document.getElementById('tab-app-duration');
+        if (!mac || !tab || !tab.classList.contains('active')) return;
+        var state = app_traffic_state;
+        var requestGeneration = ++state.generation;
+        if (state.xhr) state.xhr.abort();
+        state.xhr = null;
+        state.started = true;
+        state.loading = true;
+        state.error = false;
+        var now = new Date();
+        var start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        var end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+        document.getElementById('app-traffic-tbody').textContent = '';
+        document.getElementById('app-traffic-range').textContent = '<%:Range%>: '
+            + start.toLocaleString() + ' - ' + end.toLocaleString();
+        set_app_traffic_load_state('loading');
+        state.xhr = $.ajax({
+            url: "<%=url('admin/services/oaf/api/app_record/get_app_traffic_stats')%>",
+            data: {
+                mac: mac,
+                start_time: Math.floor(start.getTime() / 1000),
+                end_time: Math.floor(end.getTime() / 1000)
+            },
+            dataType: 'json',
+            timeout: 15000
+        }).done(function(resp) {
+            if (requestGeneration !== state.generation) return;
+            if (!resp || !Array.isArray(resp.apps)) {
+                fail_app_traffic_stats();
+                return;
+            }
+            render_app_traffic_stats(resp.apps);
+            state.error = false;
+            set_app_traffic_load_state('idle');
+        }).fail(function() {
+            if (requestGeneration === state.generation) fail_app_traffic_stats();
+        }).always(function() {
+            if (requestGeneration !== state.generation) return;
+            state.loading = false;
+            state.xhr = null;
+        });
+    }
 
     function isVisitRecordsTabActive() {
         var tab = document.getElementById('tab-visit-records');
         return !!(tab && tab.classList.contains('active'));
     }
 
-    function startVisitAutoRefresh() {
-        if (visit_refresh_timer) return;
-        visit_refresh_timer = window.setInterval(function () {
-            var state = visit_records_state;
-            if (!isVisitRecordsTabActive() || document.hidden || state.error) return;
-            if (state.refreshCycle || state.refreshPending) return;
-            if (state.loading) {
-                state.refreshPending = true;
-                return;
-            }
-            refreshVisitRecords();
-        }, 3000);
-    }
-
-    function stopVisitAutoRefresh() {
-        if (visit_refresh_timer) {
-            window.clearInterval(visit_refresh_timer);
-            visit_refresh_timer = null;
-        }
-        visit_records_state.refreshPending = false;
-    }
 	
 	function loadOnlineOfflineRecords() {
 		if (!mac) return;
@@ -592,9 +684,11 @@
 		if (!isVisible) {
 			return;
 		}
+        var requestGeneration = ++hourly_stats_request_generation;
         new XHR().get("<%=url('admin/services/oaf/api/get_hourly_stats')%>/" + encodeURIComponent(mac), null,
 			function (x, st) {
-				if (st && st.hourly_stats) {
+                if (requestGeneration !== hourly_stats_request_generation) return;
+                if (st && Array.isArray(st.hourly_stats)) {
 					hourlyStatsData = st.hourly_stats;
 					if (tabTrafficStatistics && tabTrafficStatistics.classList.contains('active')) {
 						renderHourlyTrafficChart(hourlyStatsData);
@@ -825,16 +919,6 @@
         return [appId, action, online, latestTime, totalTime, item.up_bytes, item.down_bytes].join('\u001f');
     }
 
-    function rebuild_visit_record_index() {
-        var state = visit_records_state;
-        state.seen = Object.create(null);
-        state.index = Object.create(null);
-        for (var i = 0; i < state.records.length; i++) {
-            var key = visit_record_key(state.records[i]);
-            state.seen[key] = true;
-            state.index[key] = i;
-        }
-    }
 
 
     function visit_record_equal(left, right) {
@@ -852,136 +936,59 @@
         return true;
     }
 
-    function merge_visit_records(list, isRefresh, page) {
+    function merge_visit_records(list) {
         var state = visit_records_state;
-        var fresh = [];
-        var freshKeys = Object.create(null);
         var changed = false;
         if (!Array.isArray(list)) return false;
 
         for (var i = 0; i < list.length; i++) {
+            var item = list[i] || {};
             var key = visit_record_key(item);
-            if (typeof state.index[key] !== 'undefined') {
-                if (!visit_record_equal(state.records[state.index[key]], item)) {
-                    state.records[state.index[key]] = item;
+            var index = state.index[key];
+            if (typeof index !== 'undefined') {
+                if (!visit_record_equal(state.records[index], item)) {
+                    state.records[index] = item;
                     changed = true;
                 }
-            } else if (isRefresh && page === 1) {
-                if (!freshKeys[key]) {
-                    freshKeys[key] = true;
-                    fresh.push(item);
-                    changed = true;
-                }
-            } else if (!freshKeys[key]) {
-                freshKeys[key] = true;
-                state.index[key] = state.records.length;
-                state.seen[key] = true;
-                state.records.push(item);
-                changed = true;
+                continue;
             }
-            if (isRefresh && page === 1) freshKeys[key] = true;
-        }
-        if (fresh.length) {
-            state.records = fresh.concat(state.records);
-            rebuild_visit_record_index();
+            state.index[key] = state.records.length;
+            state.records.push(item);
+            changed = true;
         }
         return changed;
     }
 
-    function mark_visit_refresh_seen(cycle, list) {
-        if (!cycle || !Array.isArray(list)) return;
-        for (var i = 0; i < list.length; i++) {
-            var item = list[i];
-            var key;
-            if (!item || typeof item !== 'object') continue;
-            key = visit_record_key(item);
-            if (!cycle.seen[key]) {
-                cycle.seen[key] = true;
-                cycle.seenCount++;
-            }
-        }
-    }
-
-
-    function begin_visit_refresh_cycle() {
-        var state = visit_records_state;
-        state.refreshCycle = {
-            nextPage: 1,
-            // Automatic refresh re-reads only page one. Explicit scrolling still loads later pages,
-            // and records not observed in this refresh remain in the cached list.
-            targetPage: 1,
-            totalPage: null,
-            totalNum: null,
-            totalNumKnown: false,
-            totalNumStable: true,
-            initialCachedCount: state.records.length,
-            scannedThrough: 0,
-            seen: Object.create(null),
-            seenCount: 0
-        };
-        request_visit_page(1, 'refresh');
-    }
-
-    function finish_visit_refresh_cycle() {
-        var state = visit_records_state;
-        if (!state.refreshCycle) return;
-
-        // Refresh pages are offset-based and may not form a stable snapshot while
-        // new records arrive. Keep cached records that were not observed; only the
-        // authoritative total_num === 0 path above may clear the cache.
-        state.refreshCycle = null;
-    }
-
-    function fail_visit_records(page, mode) {
+    function fail_visit_records(page) {
         var state = visit_records_state;
         state.error = true;
         state.errorPage = page;
-        state.errorMode = mode;
         set_visit_load_state('error');
         render_visit_list_table();
     }
 
     function continue_visit_requests() {
         var state = visit_records_state;
-        var cycle;
-        var nextPage;
 
         if (!isVisitRecordsTabActive() || document.hidden || state.loading || state.error)
             return;
         if (state.pagePending) {
             state.pagePending = false;
             if (state.hasMore) {
-                request_visit_page(state.nextPage, 'page');
+                request_visit_page(state.nextPage);
                 return;
             }
-        }
-        cycle = state.refreshCycle;
-        if (cycle) {
-            if (cycle.nextPage <= cycle.targetPage) {
-                nextPage = cycle.nextPage++;
-                request_visit_page(nextPage, 'refresh');
-                return;
-            }
-            finish_visit_refresh_cycle();
-        }
-        if (state.refreshPending) {
-            state.refreshPending = false;
-            begin_visit_refresh_cycle();
-            return;
         }
         queue_visit_load();
     }
 
-    function request_visit_page(page, mode) {
+    function request_visit_page(page) {
         var state = visit_records_state;
-        if (!mac || state.loading) return;
-        mode = mode === 'refresh' ? 'refresh' : 'page';
+        if (!mac || state.loading || state.error || !state.hasMore) return;
         if (document.hidden) {
-            if (mode === 'refresh') state.refreshPending = true;
-            else if (state.hasMore) state.pagePending = true;
+            state.pagePending = true;
             return;
         }
-        if (mode === 'page' && (state.error || !state.hasMore)) return;
 
         page = parseInt(page, 10);
         if (!(page >= 1)) page = 1;
@@ -989,57 +996,49 @@
         state.loading = true;
         state.error = false;
         state.errorPage = page;
-        state.errorMode = mode;
-        state.refreshing = mode === 'refresh';
         set_visit_load_state('loading');
         state.xhr = $.ajax({
             url: "<%=url('admin/services/oaf/api/dev_visit_list')%>/" + encodeURIComponent(mac),
             data: { page: page, page_size: visit_page_size },
             dataType: 'json',
             timeout: 15000
-        }).done(function(resp) {
+        });
+        state.xhr.done(function(resp) {
+            if (serial !== state.serial) return;
             var returnedPage;
             var totalPage;
             var totalNum;
             var hasTotalNum;
             var list;
-            var cycle;
             var authoritativeEmpty;
-            var changed = false;
-            var wasLoaded = state.loaded;
             returnedPage = parseInt(resp && resp.page, 10);
             totalPage = parseInt(resp && resp.total_page, 10);
             totalNum = parseInt(resp && resp.total_num, 10);
             hasTotalNum = !!(resp && resp.total_num !== null && typeof resp.total_num !== 'undefined' && !isNaN(totalNum));
             list = resp && Array.isArray(resp.list) ? resp.list : null;
-            authoritativeEmpty = mode === 'refresh' && hasTotalNum && totalNum === 0 && Array.isArray(list) && list.length === 0;
+            // LuCI's ubus bridge serializes an empty Lua table as {}.
+            if (!list && hasTotalNum && totalNum === 0 && resp.list &&
+                typeof resp.list === 'object' && Object.keys(resp.list).length === 0)
+                list = [];
+            authoritativeEmpty = hasTotalNum && totalNum === 0 && Array.isArray(list) && list.length === 0;
             if (!resp || !list || !(returnedPage >= 1) || !(totalPage >= 1) || returnedPage > page) {
-                fail_visit_records(page, mode);
+                fail_visit_records(page);
+                return;
             }
 
-            if (mode === 'refresh') {
-                cycle = state.refreshCycle;
-                if (!cycle) {
-                    fail_visit_records(page, mode);
-                    return;
-                }
-                cycle.targetPage = Math.min(cycle.targetPage, totalPage);
-                merge_visit_records(list, true, returnedPage);
-                cycle.nextPage = returnedPage + 1;
-                if (returnedPage < page) {
-                    cycle.targetPage = Math.min(cycle.targetPage, returnedPage);
-                    cycle.nextPage = cycle.targetPage + 1;
-                }
-                state.hasMore = state.nextPage <= totalPage && list.length >= visit_page_size;
+            if (authoritativeEmpty) {
+                state.records = [];
+                state.index = Object.create(null);
+                state.rowIndex = Object.create(null);
+                state.nextPage = 1;
+                state.hasMore = false;
             } else if (returnedPage < page) {
                 // The backend clamps pages after records disappear; keep the returned page.
-                merge_visit_records(list, false, returnedPage);
-                state.loadedPages = Math.max(state.loadedPages, returnedPage);
+                merge_visit_records(list);
                 state.nextPage = returnedPage + 1;
                 state.hasMore = false;
             } else {
-                merge_visit_records(list, false, page);
-                state.loadedPages = Math.max(state.loadedPages, page);
+                merge_visit_records(list);
                 state.nextPage = page + 1;
                 state.hasMore = state.nextPage <= totalPage && list.length >= visit_page_size;
             }
@@ -1048,26 +1047,32 @@
             set_visit_load_state('idle');
             render_visit_list_table();
         }).fail(function() {
-            if (serial === state.serial) fail_visit_records(page, mode);
+            if (serial === state.serial) fail_visit_records(page);
         }).always(function() {
             if (serial !== state.serial) return;
-            state.loading = false;
             state.xhr = null;
-            state.refreshing = false;
+            state.loading = false;
             continue_visit_requests();
         });
     }
+
+    function startVisitRecords() {
+        var state = visit_records_state;
+        if (!mac || state.started) return;
         state.started = true;
         state.nextPage = 1;
-        state.loadedPages = 0;
         state.records = [];
-        state.seen = Object.create(null);
+        state.index = Object.create(null);
+        state.rowIndex = Object.create(null);
+        state.loading = false;
+        state.loaded = false;
+        state.hasMore = true;
         state.error = false;
-        state.refreshPending = false;
         state.pagePending = false;
-        state.refreshCycle = null;
         set_visit_load_state('idle');
         render_visit_list_table();
+        request_visit_page(1);
+    }
 
     function loadVisitListData() {
         var state = visit_records_state;
@@ -1081,34 +1086,15 @@
             return;
         }
         if (state.error || !state.hasMore) return;
-        request_visit_page(state.nextPage, 'page');
-    }
-
-    function refreshVisitRecords() {
-        var state = visit_records_state;
-        if (!mac) return;
-        if (!state.started) {
-            startVisitRecords();
-            return;
-        }
-        if (state.loading) {
-            state.refreshPending = true;
-            return;
-        }
-        if (state.error || state.refreshCycle) return;
-        begin_visit_refresh_cycle();
+        request_visit_page(state.nextPage);
     }
 
     function retryVisitRecords() {
         var state = visit_records_state;
         if (!state.error || state.loading) return;
         var page = state.errorPage || state.nextPage || 1;
-        var mode = state.errorMode === 'refresh' ? 'refresh' : 'page';
         state.error = false;
-        if (mode === 'refresh' && !state.refreshCycle)
-            begin_visit_refresh_cycle();
-        else
-            request_visit_page(page, mode);
+        request_visit_page(page);
     }
 
 
@@ -1244,11 +1230,9 @@
         var rowContainer = tb.tBodies && tb.tBodies.length ? tb.tBodies[0] : tb;
         var previousRow = tb.rows[0] || null;
 
-        var orderedKeys = Object.create(null);
         for (i = 0; i < visit_list.length; i++) {
             var item = visit_list[i] || {};
             var key = visit_record_key(item);
-            orderedKeys[key] = true;
             var tr = null;
             if (typeof visit_records_state.rowIndex === 'undefined') visit_records_state.rowIndex = Object.create(null);
             var cached = visit_records_state.rowIndex[key];
@@ -1274,9 +1258,8 @@
     }
     function queue_visit_load() {
         if (visit_load_frame !== null || document.hidden) return;
-        visit_load_frame = window.requestAnimationFrame
-            ? window.requestAnimationFrame(check_visit_load)
-            : window.setTimeout(check_visit_load, 0);
+        // Paging is I/O work, not painting; do not wait for a rendering frame.
+        visit_load_frame = window.setTimeout(check_visit_load, 0);
     }
 
     function check_visit_load() {
@@ -1286,15 +1269,8 @@
         var sentinel = document.getElementById('visit-record-sentinel');
         if (!sentinel) return;
         var rect = sentinel.getBoundingClientRect();
-        var root = document.querySelector('.visit-record-scroll');
-        var top = 0;
         var bottom = window.innerHeight || document.documentElement.clientHeight;
-        if (root) {
-            var rootRect = root.getBoundingClientRect();
-            top = rootRect.top;
-            bottom = rootRect.bottom;
-        }
-        if (rect.bottom >= top - 160 && rect.top <= bottom + 160) loadVisitListData();
+        if (rect.bottom >= -160 && rect.top <= bottom + 160) loadVisitListData();
     }
 
     function initVisitRecordLoader() {
@@ -1302,18 +1278,17 @@
         var sentinel = document.getElementById('visit-record-sentinel');
         if (!sentinel) return;
         visit_loader_initialized = true;
-        var root = document.querySelector('.visit-record-scroll');
         if (window.IntersectionObserver) {
             visit_sentinel_observer = new IntersectionObserver(function(entries) {
                 if (entries.some(function(entry) { return entry.isIntersecting; })) queue_visit_load();
-            }, { root: root || null, rootMargin: '0px 0px 160px 0px' });
+            }, { root: null, rootMargin: '0px 0px 160px 0px' });
             visit_sentinel_observer.observe(sentinel);
         }
         $(window).on('scroll.visitRecords resize.visitRecords orientationchange.visitRecords', queue_visit_load);
-        if (root) $(root).on('scroll.visitRecords', queue_visit_load);
+        document.addEventListener('scroll', queue_visit_load, true);
         $(document).on('visibilitychange.visitRecords', function() {
             if (document.hidden) return;
-            // A response may have completed while hidden; resume the pending page/refresh cycle explicitly.
+            // A response may have completed while hidden; resume the pending page explicitly.
             continue_visit_requests();
             queue_visit_load();
         });
@@ -1678,15 +1653,17 @@
 		return colors[index % colors.length];
 	}
 
-	function formatTraffic(bytes) {
+	function formatTraffic(bytes, lower_bound) {
+		var round = lower_bound ? Math.floor : Math.round;
 		if (!bytes || bytes < 1024) {
 			return (bytes || 0) + ' B';
 		} else if (bytes < 1024 * 1024) {
-			return Math.round(bytes / 1024) + ' KB';
+			return round(bytes / 1024) + ' KB';
 		} else if (bytes < 1024 * 1024 * 1024) {
-			return Math.round(bytes / (1024 * 1024)) + ' MB';
+			return round(bytes / (1024 * 1024)) + ' MB';
 		} else {
-			return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+			var gb = bytes / (1024 * 1024 * 1024);
+			return (lower_bound ? Math.floor(gb * 100) / 100 : gb).toFixed(2) + ' GB';
 		}
 	}
 
@@ -1983,46 +1960,75 @@
 
 	function loadBehaviorRules() {
 		if (!mac) return;
+        var requestGeneration = ++behavior_rules_request_generation;
 		var tbody = document.getElementById('behavior_rule_tbody');
 		render_behavior_whitelist_hint({});
 		if (tbody) {
 			tbody.innerHTML = '<tr class="tr"><td class="td" colspan="4" style="text-align:center;"><%:Loading...%></td></tr>';
 		}
 		new XHR().get("<%=url('admin/services/oaf/api/get_user_parental_control_rules')%>", {mac: mac}, function(x, data) {
+            if (requestGeneration !== behavior_rules_request_generation) return;
 			var list = (data && Array.isArray(data.list)) ? data.list : [];
 			render_behavior_whitelist_hint(data || {});
 			render_behavior_rule_table(list);
 		});
 	}
 
-	function showTabContent(tabId, tabEl) {
-		var tabs = document.querySelectorAll('.tab-body');
-		tabs.forEach(function(tab) {
-			tab.classList.remove('active');
-		});
-		var targetTab = document.getElementById(tabId);
-		if (targetTab) {
-			targetTab.classList.add('active');
-		}
-		
-        var tabItems = document.querySelectorAll('.tab-item');
-        tabItems.forEach(function(item) {
-            item.classList.remove('active');
-            item.setAttribute('aria-selected', 'false');
+    function getUserDetailTabItem(tabId) {
+        if (!tabId) return null;
+        var tab = document.getElementById(tabId);
+        if (!tab || !tab.classList.contains('tab-body') || tab.hidden || tab.style.display === 'none') return null;
+        var items = document.querySelectorAll('.tab-list .tab-item[aria-controls]');
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (item.getAttribute('aria-controls') !== tabId || item.hidden || item.getAttribute('aria-hidden') === 'true') continue;
+            var style = window.getComputedStyle(item);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse') return item;
+        }
+        return null;
+    }
+
+    function onUserDetailTabKeydown(event, tabEl) {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            showTabContent(tabEl.getAttribute('aria-controls'));
+            return;
+        }
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
+        var items = Array.prototype.filter.call(document.querySelectorAll('.tab-list .tab-item[aria-controls]'), function(item) {
+            return getUserDetailTabItem(item.getAttribute('aria-controls')) === item;
         });
-        if (!tabEl && window.event && window.event.target) {
-            tabEl = window.event.target;
-        }
-        if (tabEl) {
-            tabEl.classList.add('active');
-            tabEl.setAttribute('aria-selected', 'true');
-        }
+        var index = items.indexOf(tabEl);
+        if (index < 0) return;
+        event.preventDefault();
+        if (event.key === 'Home') index = 0;
+        else if (event.key === 'End') index = items.length - 1;
+        else index = (index + (event.key === 'ArrowRight' ? 1 : -1) + items.length) % items.length;
+        items[index].focus();
+        showTabContent(items[index].getAttribute('aria-controls'));
+    }
+
+    function showTabContent(tabId) {
+        var tabEl = getUserDetailTabItem(tabId);
+        if (!tabEl) return;
+        var tabs = document.querySelectorAll('.tab-body');
+        tabs.forEach(function(tab) {
+            var active = tab.id === tabId;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-hidden', active ? 'false' : 'true');
+        });
+        var tabItems = document.querySelectorAll('.tab-list .tab-item[aria-controls]');
+        tabItems.forEach(function(item) {
+            var active = item === tabEl;
+            item.classList.toggle('active', active);
+            item.setAttribute('aria-selected', active ? 'true' : 'false');
+            item.setAttribute('tabindex', active ? '0' : '-1');
+        });
+        if (user_detail_tab_state) user_detail_tab_state.select(tabId);
 		if (tabId === 'tab-user-info') {
-			stopVisitAutoRefresh();
 			loadUserBasicInfo();
 		}
 		if (tabId === 'tab-app-duration') {
-			stopVisitAutoRefresh();
 			if (!appTimeChart) {
 				var chartElement = document.getElementById('app_time_chart');
 				if (chartElement) {
@@ -2034,14 +2040,17 @@
 			} else {
 				loadAppVisitTime();
 			}
+            if (!app_traffic_state.started) loadAppTrafficStats();
 			if (appTimeChart) {
 				setTimeout(function() {
 					appTimeChart.resize();
 				}, 100);
 			}
 		}
+        if (tabId === 'tab-exact-traffic') {
+            window.OAFExactTraffic.ensureLoaded(mac);
+        }
 		if (tabId === 'tab-visit-records') {
-            startVisitAutoRefresh();
             if (!visit_records_state.started) loadVisitListData();
             else {
                 continue_visit_requests();
@@ -2049,7 +2058,6 @@
             }
 		}
 		if (tabId === 'tab-traffic-statistics') {
-			stopVisitAutoRefresh();
 			if (hourlyStatsData && hourlyStatsData.length > 0) {
 				renderHourlyTrafficChart(hourlyStatsData);
 			} else {
@@ -2062,7 +2070,6 @@
 			}
 		}
 		if (tabId === 'tab-app-ranking') {
-			stopVisitAutoRefresh();
 			if (hourlyStatsData && hourlyStatsData.length > 0) {
 				renderHourlyAppsChart(hourlyStatsData);
 			} else {
@@ -2075,11 +2082,42 @@
 			}
 		}
 		if (tabId === 'tab-behavior-rules') {
-			stopVisitAutoRefresh();
 			loadBehaviorRules();
 		}
 		
 	}
+
+    function refreshCurrentTab() {
+        if (!mac) return;
+        var activeTab = document.querySelector('.tab-body.active');
+        if (!activeTab || !getUserDetailTabItem(activeTab.id)) return;
+        var tabId = activeTab.id;
+        if (tabId === 'tab-user-info') {
+            loadUserBasicInfo();
+        } else if (tabId === 'tab-app-duration') {
+            loadAppVisitTime();
+            loadAppTrafficStats();
+        } else if (tabId === 'tab-exact-traffic') {
+            window.OAFExactTraffic.refresh(mac);
+        } else if (tabId === 'tab-traffic-statistics' || tabId === 'tab-app-ranking') {
+            loadHourlyStatsData();
+        } else if (tabId === 'tab-behavior-rules') {
+            loadBehaviorRules();
+        } else if (tabId === 'tab-visit-records') {
+            var state = visit_records_state;
+            ++state.serial;
+            if (state.xhr) {
+                state.xhr.abort();
+                state.xhr = null;
+            }
+            if (visit_load_frame !== null) {
+                window.clearTimeout(visit_load_frame);
+                visit_load_frame = null;
+            }
+            state.started = false;
+            loadVisitListData();
+        }
+    }
 //]]></script>
 
 <div class="cbi-map">
@@ -2091,19 +2129,21 @@
 					<span><%:Back%></span>
 				</a>
                 <h4 class="user-detail-title"><span id="device-title-name"><%:User Detail%></span><span id="device-title-separator"></span></h4><span id="device-title-mac" style="display:none;" aria-hidden="true">--</span>
+                <button type="button" id="user-detail-refresh" class="cbi-button" onclick="refreshCurrentTab()" title="<%:Refresh%>"><%:Refresh%></button>
 			</div>
 			
             <ul class="tab-list" role="tablist">
-                <li class="tab-item active" role="tab" tabindex="0" aria-selected="true" aria-controls="tab-user-info" onclick="showTabContent('tab-user-info', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-user-info', this); }"><%:Basic Info%></li>
-                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-behavior-rules" onclick="showTabContent('tab-behavior-rules', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-behavior-rules', this); }"><%:Parental Control Rules%></li>
-                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-app-duration" onclick="showTabContent('tab-app-duration', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-app-duration', this); }"><%:App Statistics%></li>
-                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-traffic-statistics" onclick="showTabContent('tab-traffic-statistics', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-traffic-statistics', this); }"><%:Today Traffic%></li>
-                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-app-ranking" onclick="showTabContent('tab-app-ranking', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-app-ranking', this); }"><%:Today Top Apps%></li>
-                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-online-offline-records" onclick="showTabContent('tab-online-offline-records', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-online-offline-records', this); }" style="display:none"><%:Online/Offline Records%></li>
-                <li class="tab-item" role="tab" tabindex="0" aria-selected="false" aria-controls="tab-visit-records" onclick="showTabContent('tab-visit-records', this)" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTabContent('tab-visit-records', this); }"><%:Visit Records%></li>
+                <li id="tab-user-info-control" class="tab-item active" role="tab" tabindex="0" aria-selected="true" aria-controls="tab-user-info" onclick="showTabContent('tab-user-info')" onkeydown="onUserDetailTabKeydown(event, this)"><%:Basic Info%></li>
+                <li id="tab-behavior-rules-control" class="tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-behavior-rules" onclick="showTabContent('tab-behavior-rules')" onkeydown="onUserDetailTabKeydown(event, this)"><%:Parental Control Rules%></li>
+                <li id="tab-app-duration-control" class="tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-app-duration" onclick="showTabContent('tab-app-duration')" onkeydown="onUserDetailTabKeydown(event, this)"><%:App Statistics%></li>
+                <li id="tab-exact-traffic-control" class="tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-exact-traffic" onclick="showTabContent('tab-exact-traffic')" onkeydown="onUserDetailTabKeydown(event, this)"><%:Exact Hourly Traffic%></li>
+                <li id="tab-traffic-statistics-control" class="tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-traffic-statistics" onclick="showTabContent('tab-traffic-statistics')" onkeydown="onUserDetailTabKeydown(event, this)"><%:Today Traffic (Legacy)%></li>
+                <li id="tab-app-ranking-control" class="tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-app-ranking" onclick="showTabContent('tab-app-ranking')" onkeydown="onUserDetailTabKeydown(event, this)"><%:Today Top Apps (Legacy)%></li>
+                <li id="tab-online-offline-records-control" class="tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-online-offline-records" onclick="showTabContent('tab-online-offline-records')" onkeydown="onUserDetailTabKeydown(event, this)" style="display:none"><%:Online/Offline Records%></li>
+                <li id="tab-visit-records-control" class="tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-visit-records" onclick="showTabContent('tab-visit-records')" onkeydown="onUserDetailTabKeydown(event, this)"><%:Visit Records%></li>
             </ul>
 
-			<div id="tab-user-info" class="tab-body active">
+			<div id="tab-user-info" class="tab-body active" role="tabpanel" aria-labelledby="tab-user-info-control" aria-hidden="false">
 				<div>
                     <div id="basic_info_load_error" class="basic-info-load-error" role="status" aria-live="polite" style="display:none;"><%:Load failed%></div>
 					<table class="table cbi-section-table user-basic-info-table" style="width: 100%;">
@@ -2160,7 +2200,7 @@
 				</div>
 			</div>
 
-			<div id="tab-behavior-rules" class="tab-body">
+			<div id="tab-behavior-rules" class="tab-body" role="tabpanel" aria-labelledby="tab-behavior-rules-control" aria-hidden="true">
 				<div>
 					<div id="behavior_whitelist_hint" class="behavior-whitelist-hint" style="display: none;"></div>
 					<table class="table cbi-section-table behavior-rule-table" style="width: 100%;">
@@ -2181,26 +2221,53 @@
 				</div>
 			</div>
 
-			<div id="tab-app-duration" class="tab-body">
+			<div id="tab-app-duration" class="tab-body" role="tabpanel" aria-labelledby="tab-app-duration-control" aria-hidden="true">
 				<div class="pie-chart">
 					<div id="app_time_chart" style="width:100%;height: 350px;">
 					</div>
 				</div>
+                <h4 class="app-traffic-heading"><%:Today App Traffic (Legacy)%></h4>
+                <div class="app-traffic-hint"><%:Duration uses runtime statistics for today. Traffic counts whole visits overlapping the current browser-local day, including bytes outside that day.%></div>
+                <div class="app-traffic-hint"><%:≥ shows the known traffic lower bound; Incomplete marks unknown visits. A dash means no measured traffic is available.%></div>
+                <div id="app-traffic-range" class="app-traffic-hint"></div>
+                <div class="app-traffic-scroll">
+                    <table id="app-traffic-table" class="table cbi-section-table">
+                        <thead>
+                            <tr class="tr table-titles">
+                                <th class="th"><%:App Name%></th>
+                                <th class="th app-traffic-value"><%:Upstream Traffic%></th>
+                                <th class="th app-traffic-value"><%:Downstream Traffic%></th>
+                                <th class="th app-traffic-value"><%:Total Traffic%></th>
+                            </tr>
+                        </thead>
+                        <tbody id="app-traffic-tbody">
+                            <tr class="tr"><td class="td app-traffic-empty" colspan="4"><%:Collecting data...%></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="app-traffic-state" class="app-traffic-hint" aria-live="polite">
+                    <span class="app-traffic-loading" style="display:none;"><%:Loading...%></span>
+                    <span class="app-traffic-error" style="display:none;"><%:Load failed%> <button type="button" id="app-traffic-retry" class="cbi-button" onclick="loadAppTrafficStats()"><%:Refresh%></button></span>
+                </div>
 			</div>
 
-			<div id="tab-traffic-statistics" class="tab-body">
+            <div id="tab-exact-traffic" class="tab-body" role="tabpanel" aria-labelledby="tab-exact-traffic-control" aria-hidden="true">
+                <%+oaf/exact_traffic%>
+            </div>
+
+			<div id="tab-traffic-statistics" class="tab-body" role="tabpanel" aria-labelledby="tab-traffic-statistics-control" aria-hidden="true">
 				<div class="bar-chart">
 					<div id="hourly_traffic_chart" style="width:100%;height: 400px;"></div>
 				</div>
 			</div>
 
-			<div id="tab-app-ranking" class="tab-body">
+			<div id="tab-app-ranking" class="tab-body" role="tabpanel" aria-labelledby="tab-app-ranking-control" aria-hidden="true">
 				<div class="bar-chart">
 					<div id="hourly_apps_chart" style="width:100%;height: 400px;"></div>
 				</div>
 			</div>
 
-			<div id="tab-online-offline-records" class="tab-body" style="display:none">
+			<div id="tab-online-offline-records" class="tab-body" role="tabpanel" aria-labelledby="tab-online-offline-records-control" aria-hidden="true" style="display:none">
 				<div style="padding: 20px;">
 					<table class="table cbi-section-table user-basic-info-table" style="width: 100%;">
 						<thead>
@@ -2219,7 +2286,7 @@
 				</div>
 			</div>
 
-            <div id="tab-visit-records" class="tab-body">
+            <div id="tab-visit-records" class="tab-body" role="tabpanel" aria-labelledby="tab-visit-records-control" aria-hidden="true">
                 <div class="visit-record-scroll">
                     <div class="visit-traffic-hint"><%:Only observed forwarded traffic after app identification is counted. Unavailable data is shown as —; bypass downstream traffic may be unavailable.%></div>
                     <table class="table cbi-section-table visit-record-table" id="visit_list_table">
@@ -2249,8 +2316,8 @@
                             <td class="td" colspan="9"><em><br /><%:Collecting data...%></em></td>
                         </tr>
                     </table>
-                <div id="visit-record-sentinel" class="visit-record-sentinel" aria-hidden="true"></div>
                 </div>
+                <div id="visit-record-sentinel" class="visit-record-sentinel" aria-hidden="true"></div>
                 <div id="visit-load-state" class="visit-load-state" aria-live="polite">
                     <span class="visit-loading" style="display:none;"><%:Loading...%></span>
                     <span class="visit-error" style="display:none;"><%:Load failed%> <button type="button" id="visit-retry" class="cbi-button"><%:Refresh%></button></span>
@@ -2269,8 +2336,7 @@
     .basic-info-load-error { color: #b91c1c; margin-bottom: 8px; }
     .visit-record-scroll {
         overflow-x: auto;
-        overflow-y: auto;
-        max-height: 1000px;
+        overflow-y: hidden;
         max-width: 100%;
         padding-right: 20px;
     }
@@ -2407,6 +2473,39 @@
         min-width: 0;
         box-sizing: border-box;
         overflow-x: auto;
+    }
+    .app-traffic-heading {
+        margin-top: 20px;
+    }
+    .app-traffic-hint {
+        margin: 6px 0;
+        color: var(--text-color-medium, #6b7280);
+        font-size: 0.9em;
+    }
+    .app-traffic-scroll {
+        max-width: 100%;
+        overflow-x: auto;
+    }
+    #app-traffic-table {
+        width: 100%;
+        min-width: 600px;
+    }
+    #app-traffic-table .th,
+    #app-traffic-table .td {
+        text-align: left;
+        vertical-align: middle;
+    }
+    #app-traffic-table .app-traffic-value {
+        width: 20%;
+        white-space: nowrap;
+    }
+    #app-traffic-table .traffic-incomplete {
+        display: block;
+        color: var(--text-color-medium, #6b7280);
+        font-size: 0.8em;
+    }
+    #app-traffic-table .app-traffic-empty {
+        text-align: center;
     }
     .bar-chart {
         width: 100%;

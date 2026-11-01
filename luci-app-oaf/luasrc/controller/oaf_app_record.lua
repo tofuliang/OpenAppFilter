@@ -79,6 +79,24 @@ local function parse_history_params()
     }
 end
 
+local function parse_exact_traffic_params()
+    local mac, mac_ok = normalize_mac_param(luci.http.formvalue("mac"))
+    local start_time = parse_integer_param("start_time", nil, 0, MAX_UINT32)
+    local end_time = parse_integer_param("end_time", nil, 0, MAX_UINT32)
+
+    if not mac_ok or start_time == nil or end_time == nil then
+        return nil, "Invalid request parameters"
+    end
+    if start_time % 3600 ~= 0 or end_time % 3600 ~= 0 or start_time >= end_time then
+        return nil, "Invalid time range"
+    end
+    return {
+        mac = mac,
+        start_time = start_time,
+        end_time = end_time
+    }
+end
+
 local function write_bad_request(message)
     luci.http.status(400, "Bad Request")
     luci.http.write_json({ error = message or "Invalid request parameters" })
@@ -94,6 +112,7 @@ function index()
     entry({"admin", "services", "oaf", "api", "app_record", "get_active_app_records"}, call("get_active_app_records")).leaf = true
     entry({"admin", "services", "oaf", "api", "app_record", "get_app_history_records"}, call("get_app_history_records")).leaf = true
     entry({"admin", "services", "oaf", "api", "app_record", "get_app_traffic_stats"}, call("get_app_traffic_stats")).leaf = true
+    entry({"admin", "services", "oaf", "api", "app_record", "get_exact_app_traffic_stats"}, call("get_exact_app_traffic_stats")).leaf = true
 end
 
 function get_active_app_records()
@@ -182,6 +201,28 @@ function get_app_traffic_stats()
         data = data
     }
 
+    local resp_obj = util.ubus("fwx", "common", req_obj)
+    if resp_obj and resp_obj.code == 2000 and resp_obj.data then
+        luci.http.write_json(resp_obj.data)
+    else
+        write_backend_error()
+    end
+end
+
+function get_exact_app_traffic_stats()
+    local util = require "luci.util"
+    local params, error_message = parse_exact_traffic_params()
+
+    luci.http.prepare_content("application/json")
+    if not params then
+        write_bad_request(error_message)
+        return
+    end
+
+    local req_obj = {
+        api = "get_exact_app_traffic_stats",
+        data = params
+    }
     local resp_obj = util.ubus("fwx", "common", req_obj)
     if resp_obj and resp_obj.code == 2000 and resp_obj.data then
         luci.http.write_json(resp_obj.data)

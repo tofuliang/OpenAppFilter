@@ -39,6 +39,7 @@
 #include "fwx.h"
 #include "k_json.h"
 #include "fwx_conntrack.h"
+#include "fwx_traffic.h"
 
 DEFINE_RWLOCK(af_client_lock);
 
@@ -62,7 +63,6 @@ static mac_config_t g_record_whitelist;
 
 
 int af_send_msg_to_user(char *pbuf, uint16_t len);
-extern int parse_flow_proto(struct sk_buff *skb, flow_info_t *flow);
 extern char *ipv6_to_str(const struct in6_addr *addr, char *str);
 
 
@@ -838,7 +838,37 @@ int __af_visit_info_report(af_client_info_t *node)
 	return 0;
 }
 
-static inline int get_packet_dir(struct net_device *in)
+/* A missing/stale MAC header is not a terminal identity. In particular, skb
+ * control-buffer bytes have no ownership contract at this hook. */
+static int af_client_source_mac(const struct sk_buff *skb, unsigned char *mac)
+{
+	const unsigned char *header;
+	const struct ethhdr *eth;
+
+	if (!skb_mac_header_was_set(skb))
+		return 0;
+	header = skb_mac_header(skb);
+	if (header < skb->head || header > skb_tail_pointer(skb) ||
+	    skb_tail_pointer(skb) - header < ETH_HLEN)
+		return 0;
+	eth = (const struct ethhdr *)header;
+	memcpy(mac, eth->h_source, ETH_ALEN);
+	return is_valid_ether_addr(mac);
+}
+
+/* skb_header_pointer also handles a non-linear header without linearising or
+ * allocating the packet. Check the offset before its signed length arithmetic. */
+static const void *af_client_network_header(const struct sk_buff *skb,
+					  unsigned int size, void *buffer)
+{
+	int offset = skb_network_offset(skb);
+
+	if (offset < 0 || offset > skb->len || size > skb->len - offset)
+		return NULL;
+	return skb_header_pointer(skb, offset, size, buffer);
+}
+
+static inline int get_packet_dir(const struct net_device *in)
 {
 	if (strstr(in->name, g_lan_ifname))
 	{
@@ -897,105 +927,63 @@ void af_update_client_status(af_client_info_t *node)
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
 static u_int32_t af_client_hook(void *priv,
-								struct sk_buff *skb,
-								const struct nf_hook_state *state)
+				struct sk_buff *skb,
+				const struct nf_hook_state *state)
 {
+	const struct net_device *in_dev = state->in;
 #else
 static u_int32_t af_client_hook(unsigned int hook,
-								struct sk_buff *skb,
-								const struct net_device *in,
-								const struct net_device *out,
-								int (*okfn)(struct sk_buff *))
+				struct sk_buff *skb,
+				const struct net_device *in,
+				const struct net_device *out,
+				int (*okfn)(struct sk_buff *))
 {
+	const struct net_device *in_dev = in;
 #endif
-	struct ethhdr *ethhdr = NULL;
 	unsigned char smac[ETH_ALEN];
-	af_client_info_t *nfc = NULL;
-	int pkt_dir = 0;
-	struct iphdr *iph = NULL;
-	unsigned int ip = 0;
-	struct ipv6hdr *ip6h = NULL;
+	af_client_info_t *nfc;
+	struct iphdr iph_buf;
+	struct ipv6hdr ip6h_buf;
+	const struct iphdr *iph = NULL;
+	const struct ipv6hdr *ip6h = NULL;
 	enum ip_conntrack_info ctinfo;
 
-	struct nf_conn *ct = nf_ct_get(skb, &ctinfo);
-	if (NULL == ct)
+	if (!in_dev || !nf_ct_get(skb, &ctinfo))
 		return NF_ACCEPT;
-	if (skb->protocol == htons(ETH_P_IPV6) && AF_MODE_GATEWAY != af_work_mode){
+	if (skb->protocol == htons(ETH_P_IPV6) && AF_MODE_GATEWAY != af_work_mode)
 		return NF_ACCEPT;
-	}
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
-	if (!skb->dev)
+	if (PKT_DIR_UP != get_packet_dir(in_dev) || !af_client_source_mac(skb, smac))
 		return NF_ACCEPT;
 
-	pkt_dir = get_packet_dir(skb->dev);
-#else
-	if (!in)
-	{
-		AF_ERROR("in is NULL\n");
-		return NF_ACCEPT;
-	}
-	pkt_dir = get_packet_dir(in);
-#endif
-
-	if (PKT_DIR_UP != pkt_dir)
-		return NF_ACCEPT;
-
-	ethhdr = eth_hdr(skb);
-	if (ethhdr)
-	{
-		memcpy(smac, ethhdr->h_source, ETH_ALEN);
-	}
-	else
-	{
-		memcpy(smac, &skb->cb[40], ETH_ALEN);
-	}
-
+	if (skb->protocol == htons(ETH_P_IP))
+		iph = af_client_network_header(skb, sizeof(iph_buf), &iph_buf);
+	else if (skb->protocol == htons(ETH_P_IPV6))
+		ip6h = af_client_network_header(skb, sizeof(ip6h_buf), &ip6h_buf);
 
 	AF_CLIENT_LOCK_W();
-	nfc = find_af_client(smac);
-	if (!nfc)
-	{
-		if (skb->dev)
-			AF_DEBUG("from dev:%s %pI4", skb->dev->name, &ip);
-		nfc = nf_client_add(smac);
-	}
-
+	nfc = find_and_add_af_client(smac);
 	if (nfc) {
-		if (skb->protocol == htons(ETH_P_IP)) {
-			iph = ip_hdr(skb);
-			if (iph && nfc->ip != iph->saddr) {
-				AF_DEBUG("update node " MAC_FMT " ipv4 %pI4--->%pI4\n", 
-					MAC_ARRAY(nfc->mac), &nfc->ip, &iph->saddr);
-				nfc->ip = iph->saddr;
-			}
-		}
-		else if (skb->protocol == htons(ETH_P_IPV6)) {
-			ip6h = ipv6_hdr(skb);
-			if (ip6h && !ipv6_addr_equal(&nfc->ipv6, &ip6h->saddr)) {
-				nfc->ipv6 = ip6h->saddr;
-			}
-		}
+		if (iph && iph->version == 4 && iph->ihl >= 5)
+			nfc->ip = iph->saddr;
+		else if (ip6h && ip6h->version == 6)
+			nfc->ipv6 = ip6h->saddr;
+		/* Legacy activity/rate counters only. Exact device/App/unknown
+		 * bytes all originate together in the late hook below. */
 		nfc->flow.up_bytes += skb->len;
 		nfc->flow.up_pkts++;
-		nfc->update_jiffies = jiffies;  
+		nfc->update_jiffies = jiffies;
 	}
-
 	AF_CLIENT_UNLOCK_W();
-	
 	return NF_ACCEPT;
 }
 
-/* App id from the DPI-identified conntrack mark. Late FORWARD only observes
- * accepted packets; stale drop flags do not negate these transmitted bytes.
- * Ignored apps and system app ids below 1001 are not user applications. */
-static int af_traffic_appid_from_ct(struct sk_buff *skb)
+/* A packet belongs to the exact stream when it reaches OAF's late FORWARD
+ * hook. Subsequent hooks may still drop it; this is not a wire-delivery ACK.
+ * Ignored/system apps remain measured bytes in the unknown category. */
+static int af_traffic_appid_from_ct(const struct nf_conn *ct)
 {
-	struct nf_conn *ct = NULL;
-	enum ip_conntrack_info ctinfo;
 	u_int32_t app_id;
 
-	ct = nf_ct_get(skb, &ctinfo);
 	if (!ct)
 		return 0;
 	app_id = fwx_ct_get_appid(ct);
@@ -1006,152 +994,172 @@ static int af_traffic_appid_from_ct(struct sk_buff *skb)
 	return (int)app_id;
 }
 
-/* Bypass uplink app id from the forward af_conn tuple captured at
- * PRE_ROUTING. Callers hold af_conn_lock only around af_conn_find(). */
-static int af_traffic_appid_from_conn(struct sk_buff *skb)
+/* Bypass DPI stores host-order ports in its own IPv4 flow table. Read only
+ * the bounded tuple here: the full DPI parser assumes linear L4 payloads. */
+static int af_traffic_appid_from_conn(struct sk_buff *skb, const struct iphdr *iph)
 {
-	flow_info_t flow;
+	struct {
+		__be16 source;
+		__be16 dest;
+	} ports_buf;
+	const typeof(ports_buf) *ports;
 	af_conn_t *conn;
+	unsigned int header_len;
+	int offset = skb_network_offset(skb);
 	int app_id = 0;
 
-	if (skb->protocol != htons(ETH_P_IP))
+	if (!iph || (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP) ||
+	    (ntohs(iph->frag_off) & IP_OFFSET))
 		return 0;
-
-	memset((char *)&flow, 0x0, sizeof(flow_info_t));
-	if (parse_flow_proto(skb, &flow) < 0)
+	header_len = iph->ihl * 4;
+	if (offset < 0 || offset > skb->len ||
+	    header_len > skb->len - offset ||
+	    sizeof(ports_buf) > skb->len - offset - header_len ||
+	    ntohs(iph->tot_len) < header_len + sizeof(ports_buf))
+		return 0;
+	ports = skb_header_pointer(skb, offset + header_len, sizeof(ports_buf), &ports_buf);
+	if (!ports)
 		return 0;
 
 	spin_lock(&af_conn_lock);
-	conn = af_conn_find(flow.src, flow.dst, flow.sport, flow.dport, flow.l4_protocol);
-	/* Reaching late FORWARD proves this packet was accepted; the cached
-	 * drop action can lag a policy change in the bypass DPI path. */
-	if (conn && !conn->ignore &&
-	    conn->app_id > 1000 && conn->app_id <= 32000)
+	conn = af_conn_find(iph->saddr, iph->daddr, ntohs(ports->source),
+			   ntohs(ports->dest), iph->protocol);
+	if (conn && !conn->ignore && conn->app_id > 1000 && conn->app_id <= 32000)
 		app_id = conn->app_id;
 	spin_unlock(&af_conn_lock);
 	return app_id;
 }
 
+/* DHCP reuse can leave two live MACs with the same IP. Retain the first
+ * match solely for legacy activity rates, but v2 must treat ambiguous
+ * identity as unattributed. Caller holds af_client_lock. */
+static af_client_info_t *af_traffic_destination_client(const struct iphdr *iph,
+						     const struct ipv6hdr *ip6h,
+						     int *unambiguous)
+{
+	af_client_info_t *node;
+	af_client_info_t *match = NULL;
+	int i;
+
+	*unambiguous = 0;
+	if (!iph && !ip6h)
+		return NULL;
+	for (i = 0; i < MAX_AF_CLIENT_HASH_SIZE; i++) {
+		list_for_each_entry(node, &af_client_list_table[i], hlist) {
+			if ((iph && node->ip == iph->daddr) ||
+			    (ip6h && ipv6_addr_equal(&node->ipv6, &ip6h->daddr))) {
+				if (match)
+					return match;
+				match = node;
+			}
+		}
+	}
+	*unambiguous = match != NULL;
+	return match;
+}
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
 static u_int32_t af_client_hook2(void *priv,
-								 struct sk_buff *skb,
-								 const struct nf_hook_state *state)
+				 struct sk_buff *skb,
+				 const struct nf_hook_state *state)
 {
+	const struct net_device *in_dev = state->in;
 #else
 static u_int32_t af_client_hook2(unsigned int hook,
-								 struct sk_buff *skb,
-								 const struct net_device *in,
-								 const struct net_device *out,
-								 int (*okfn)(struct sk_buff *))
+				 struct sk_buff *skb,
+				 const struct net_device *in,
+				 const struct net_device *out,
+				 int (*okfn)(struct sk_buff *))
 {
+	const struct net_device *in_dev = in;
 #endif
-	struct ethhdr *ethhdr = NULL;
-	unsigned char smac[ETH_ALEN];
+	unsigned char mac[ETH_ALEN];
 	af_client_info_t *nfc = NULL;
-	int pkt_dir = 0;
-	int app_id = 0;
-	int is_record_whitelist = 0;
-	struct iphdr *iph = NULL;
-	struct ipv6hdr *ip6h = NULL;
+	struct iphdr iph_buf;
+	struct ipv6hdr ip6h_buf;
+	const struct iphdr *iph = NULL;
+	const struct ipv6hdr *ip6h = NULL;
 	enum ip_conntrack_info ctinfo;
+	struct nf_conn *ct;
+	int pkt_dir;
+	int app_id;
+	int have_identity = 0;
+	int record_enabled = READ_ONCE(g_record_enable);
 
-	struct nf_conn *ct = nf_ct_get(skb, &ctinfo);
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
-	if (!skb->dev)
+	if (!in_dev || (skb->protocol != htons(ETH_P_IP) &&
+			 skb->protocol != htons(ETH_P_IPV6)))
 		return NF_ACCEPT;
-
-	pkt_dir = get_packet_dir(skb->dev);
-#else
-	if (!in)
-	{
-		AF_ERROR("in is NULL\n");
-		return NF_ACCEPT;
+	pkt_dir = get_packet_dir(in_dev);
+	ct = nf_ct_get(skb, &ctinfo);
+	if (skb->protocol == htons(ETH_P_IP)) {
+		iph = af_client_network_header(skb, sizeof(iph_buf), &iph_buf);
+		if (iph && (iph->version != 4 || iph->ihl < 5))
+			iph = NULL;
+	} else {
+		ip6h = af_client_network_header(skb, sizeof(ip6h_buf), &ip6h_buf);
+		if (ip6h && ip6h->version != 6)
+			ip6h = NULL;
 	}
-	pkt_dir = get_packet_dir(in);
-#endif
-	if (!skb->dev)
-	{
-		return NF_ACCEPT;
-	}
-	/* Bypass DPI uses its own flow table, including NOTRACK uplinks.
-	 * Keep the existing conntrack requirement for gateway/bridge and
-	 * downstream client totals. */
-	if (!ct && (af_work_mode != AF_MODE_BYPASS || pkt_dir != PKT_DIR_UP))
-		return NF_ACCEPT;
 
-
-	if (PKT_DIR_UP == pkt_dir)
-	{
-		/*
-		 * Uplink per-app accounting only: client flow totals for this
-		 * direction are already counted in af_client_hook at FIRST+1.
-		 * The client was just created there for this same packet.
-		 */
-		if (skb->protocol == htons(ETH_P_IPV6) && AF_MODE_GATEWAY != af_work_mode)
-			return NF_ACCEPT;
-		ethhdr = eth_hdr(skb);
-		if (ethhdr)
-			memcpy(smac, ethhdr->h_source, ETH_ALEN);
-		else
-			memcpy(smac, &skb->cb[40], ETH_ALEN);
-
-		AF_CLIENT_LOCK_R();
-		nfc = find_af_client(smac);
+	/* The legacy per-app writer runs after the client lock is released.
+	 * Pin its node until then even if the expiry sweep detaches it. */
+	rcu_read_lock();
+	AF_CLIENT_LOCK_W();
+	if (PKT_DIR_UP == pkt_dir) {
+		have_identity = af_client_source_mac(skb, mac);
+		if (have_identity) {
+			nfc = find_and_add_af_client(mac);
+			if (nfc) {
+				if (iph)
+					nfc->ip = iph->saddr;
+				else if (ip6h)
+					nfc->ipv6 = ip6h->saddr;
+			}
+		}
+	} else {
+		nfc = af_traffic_destination_client(iph, ip6h, &have_identity);
 		if (nfc) {
-			nfc->update_jiffies = jiffies;
-			is_record_whitelist = nfc->record_whitelist;
-		}
-		AF_CLIENT_UNLOCK_R();
-	}
-	else
-	{
-		AF_CLIENT_LOCK_R();
-
-		if (skb->protocol == htons(ETH_P_IP)) {
-			iph = ip_hdr(skb);
-			nfc = find_af_client_by_ip(iph->daddr);
-		}
-		else if (skb->protocol == htons(ETH_P_IPV6)) {
-			ip6h = ipv6_hdr(skb);
-			nfc = find_af_client_by_ipv6(&ip6h->daddr);
-			if (nfc){
-				AF_LMT_DEBUG("found ipv6 %pI6 client\n", &ip6h->daddr);
-			}
-			else{
-				AF_LMT_DEBUG("not found ipv6 %pI6 client\n", &ip6h->daddr);
-			}
-		}
-		if (nfc){
-			/* Legacy downlink client totals were registered only from 4.16. */
+			memcpy(mac, nfc->mac, ETH_ALEN);
+			have_identity = have_identity && is_valid_ether_addr(mac);
+			/* Preserve legacy rate/report semantics, including its historical
+			 * conntrack requirement. These are not the v2 source of truth. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
-			nfc->flow.down_bytes += skb->len;
-			nfc->flow.down_pkts++;
+			if (ct) {
+				nfc->flow.down_bytes += skb->len;
+				nfc->flow.down_pkts++;
+			}
 #endif
-			nfc->update_jiffies = jiffies;
-			is_record_whitelist = nfc->record_whitelist;
 		}
-
-		AF_CLIENT_UNLOCK_R();
 	}
+	if (nfc)
+		nfc->update_jiffies = jiffies;
+	AF_CLIENT_UNLOCK_W();
 
-	if (!nfc || is_record_whitelist || !g_record_enable)
-		return NF_ACCEPT;
+	if (!record_enabled)
+		goto out;
+	if (!have_identity) {
+		/* Never invent a MAC, resolve a neighbor heuristically, or assign
+		 * these bytes to a device's unknown-App bucket. */
+		af_traffic_v2_unattributed(pkt_dir, skb->len);
+		goto out;
+	}
+	/* Apply the same live recording gate to device/App/unknown bytes.
+	 * App-filter/MAC-filter whitelists are not recording whitelists. */
+	if (fwx_match_record_whitelist(mac))
+		goto out;
 
-	/*
-	 * Gateway/bridge: the conntrack mark carries the DPI-identified app id
-	 * for both directions of the flow. Bypass mode never populates the
-	 * ct mark; only its observable uplink flow can be resolved through
-	 * the forward af_conn tuple, so no downlink bytes are fabricated.
-	 */
 	if (AF_MODE_BYPASS == af_work_mode)
-		app_id = (PKT_DIR_UP == pkt_dir) ? af_traffic_appid_from_conn(skb) : 0;
+		app_id = PKT_DIR_UP == pkt_dir ? af_traffic_appid_from_conn(skb, iph) : 0;
 	else
-		app_id = af_traffic_appid_from_ct(skb);
+		app_id = af_traffic_appid_from_ct(ct);
 
-	if (app_id > 0)
+	/* No conntrack or identified app is required: all observed eligible
+	 * bytes enter exactly one v2 app/unknown category at this one hook. */
+	af_traffic_v2_record(mac, app_id, pkt_dir, skb->len);
+	if (nfc && app_id > 0)
 		af_record_app_traffic(nfc, app_id, pkt_dir, skb->len);
-
+out:
+	rcu_read_unlock();
 	return NF_ACCEPT;
 }
 
@@ -1245,6 +1253,9 @@ static void af_client_maint_work_func(struct work_struct *work)
 		node->timer_count++;
 	}
 
+	/* Independent of legacy visit delivery and its minute-level timer. */
+	af_traffic_v2_report();
+
 	/* A single O(N) expiry sweep, not a fixed-rate cleanup bottleneck. */
 	collect_expired_clients(&expired);
 	list_for_each_entry_safe(node, tmp, &expired, hlist)
@@ -1268,6 +1279,7 @@ int af_client_init(void)
 {
 	int err;
 	nf_client_list_init();
+	af_traffic_v2_init();
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
 	err = nf_register_net_hooks(&init_net, af_client_ops, ARRAY_SIZE(af_client_ops));
 #else
@@ -1275,6 +1287,8 @@ int af_client_init(void)
 #endif
 	if (err) {
 		AF_ERROR("register client hooks failed!\n");
+		af_traffic_v2_exit();
+		return err;
 	}
 	schedule_delayed_work(&af_client_maint_work, HZ);
 
@@ -1371,6 +1385,8 @@ void af_client_exit(void)
 	af_client_stopping = true;
 	spin_unlock_bh(&af_client_maint_state_lock);
 	cancel_delayed_work_sync(&af_client_maint_work);
+	/* No hook or work item can still touch the v2 RAM pool. */
+	af_traffic_v2_exit();
 	af_client_detach_all(&detached);
 	af_client_free_detached(&detached);
 	rcu_barrier();

@@ -223,6 +223,15 @@ static int fwx_json_add_owned(struct json_object *parent, const char *name,
     return 0;
 }
 
+static int fwx_json_add_null(struct json_object *parent, const char *name)
+{
+    if (!parent || !name)
+        return -1;
+    /* json-c represents JSON null as NULL, not an allocation failure. */
+    json_object_object_add(parent, name, NULL);
+    return 0;
+}
+
 static int fwx_json_array_add_owned(struct json_object *array,
                                     struct json_object *value)
 {
@@ -3784,14 +3793,14 @@ struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
                                    json_object_new_int64(row_end64)) != 0 ||
                 fwx_json_add_owned(item_obj, "total_time",
                                    json_object_new_int(row_duration)) != 0 ||
-                fwx_json_add_owned(item_obj, "up_bytes",
-                    sqlite3_column_type(stmt, 7) == SQLITE_NULL
-                        ? json_object_new_null()
-                        : json_object_new_int64(sqlite3_column_int64(stmt, 7))) != 0 ||
-                fwx_json_add_owned(item_obj, "down_bytes",
-                    sqlite3_column_type(stmt, 8) == SQLITE_NULL
-                        ? json_object_new_null()
-                        : json_object_new_int64(sqlite3_column_int64(stmt, 8))) != 0) {
+                (sqlite3_column_type(stmt, 7) == SQLITE_NULL
+                    ? fwx_json_add_null(item_obj, "up_bytes")
+                    : fwx_json_add_owned(item_obj, "up_bytes",
+                        json_object_new_int64(sqlite3_column_int64(stmt, 7)))) != 0 ||
+                (sqlite3_column_type(stmt, 8) == SQLITE_NULL
+                    ? fwx_json_add_null(item_obj, "down_bytes")
+                    : fwx_json_add_owned(item_obj, "down_bytes",
+                        json_object_new_int64(sqlite3_column_int64(stmt, 8)))) != 0) {
                 json_object_put(item_obj);
                 rc = SQLITE_NOMEM;
                 goto CLEANUP;
@@ -3927,19 +3936,13 @@ static int compare_app_traffic_aggregate(const void *a, const void *b)
 {
     const app_traffic_aggregate_t *left = a;
     const app_traffic_aggregate_t *right = b;
-    int left_complete = left->unknown_up_count == 0 && left->unknown_down_count == 0;
-    int right_complete = right->unknown_up_count == 0 && right->unknown_down_count == 0;
+    uint64_t left_total = left->up_bytes + left->down_bytes;
+    uint64_t right_total = right->up_bytes + right->down_bytes;
 
-    if (left_complete != right_complete)
-        return left_complete ? -1 : 1;
-    if (left_complete) {
-        uint64_t left_total = left->up_bytes + left->down_bytes;
-        uint64_t right_total = right->up_bytes + right->down_bytes;
-        if (left_total > right_total)
-            return -1;
-        if (left_total < right_total)
-            return 1;
-    }
+    if (left_total > right_total)
+        return -1;
+    if (left_total < right_total)
+        return 1;
     return left->appid < right->appid ? -1 : left->appid > right->appid;
 }
 
@@ -4077,8 +4080,7 @@ struct json_object *fwx_api_get_app_traffic_stats(struct json_object *req_obj)
         }
     }
     for (i = 0; i < item_count; i++) {
-        if (items[i].unknown_up_count == 0 && items[i].unknown_down_count == 0 &&
-            items[i].up_bytes > (uint64_t)INT64_MAX - items[i].down_bytes)
+        if (items[i].up_bytes > (uint64_t)INT64_MAX - items[i].down_bytes)
             goto ERROR;
     }
     if (item_count > 1)
@@ -4128,18 +4130,24 @@ struct json_object *fwx_api_get_app_traffic_stats(struct json_object *req_obj)
             add_app_icon_missing_flag(app_obj, items[i].appid) != 0 ||
             fwx_json_add_owned(app_obj, "record_count",
                                json_object_new_int64(items[i].record_count)) != 0 ||
-            fwx_json_add_owned(app_obj, "up_bytes",
-                items[i].unknown_up_count == 0
-                    ? json_object_new_int64((int64_t)items[i].up_bytes)
-                    : json_object_new_null()) != 0 ||
-            fwx_json_add_owned(app_obj, "down_bytes",
-                items[i].unknown_down_count == 0
-                    ? json_object_new_int64((int64_t)items[i].down_bytes)
-                    : json_object_new_null()) != 0 ||
-            fwx_json_add_owned(app_obj, "total_bytes",
-                items[i].unknown_up_count == 0 && items[i].unknown_down_count == 0
-                    ? json_object_new_int64((int64_t)(items[i].up_bytes + items[i].down_bytes))
-                    : json_object_new_null()) != 0 ||
+            fwx_json_add_owned(app_obj, "known_up_bytes",
+                               json_object_new_int64((int64_t)items[i].up_bytes)) != 0 ||
+            fwx_json_add_owned(app_obj, "known_down_bytes",
+                               json_object_new_int64((int64_t)items[i].down_bytes)) != 0 ||
+            fwx_json_add_owned(app_obj, "known_total_bytes",
+                               json_object_new_int64((int64_t)(items[i].up_bytes + items[i].down_bytes))) != 0 ||
+            (items[i].unknown_up_count == 0
+                ? fwx_json_add_owned(app_obj, "up_bytes",
+                    json_object_new_int64((int64_t)items[i].up_bytes))
+                : fwx_json_add_null(app_obj, "up_bytes")) != 0 ||
+            (items[i].unknown_down_count == 0
+                ? fwx_json_add_owned(app_obj, "down_bytes",
+                    json_object_new_int64((int64_t)items[i].down_bytes))
+                : fwx_json_add_null(app_obj, "down_bytes")) != 0 ||
+            (items[i].unknown_up_count == 0 && items[i].unknown_down_count == 0
+                ? fwx_json_add_owned(app_obj, "total_bytes",
+                    json_object_new_int64((int64_t)(items[i].up_bytes + items[i].down_bytes)))
+                : fwx_json_add_null(app_obj, "total_bytes")) != 0 ||
             fwx_json_add_owned(app_obj, "unknown_up_count",
                                json_object_new_int64(items[i].unknown_up_count)) != 0 ||
             fwx_json_add_owned(app_obj, "unknown_down_count",
@@ -4168,6 +4176,249 @@ ERROR:
     free(items);
     if (apps_obj)
         json_object_put(apps_obj);
+    if (data_obj)
+        json_object_put(data_obj);
+    return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+}
+
+static int add_exact_traffic_bytes(struct json_object *obj,
+                                  uint64_t up_bytes, uint64_t down_bytes)
+{
+    if (up_bytes > (uint64_t)INT64_MAX ||
+        down_bytes > (uint64_t)INT64_MAX - up_bytes)
+        return -1;
+    return fwx_json_add_owned(obj, "up_bytes",
+                             json_object_new_int64((int64_t)up_bytes)) != 0 ||
+           fwx_json_add_owned(obj, "down_bytes",
+                             json_object_new_int64((int64_t)down_bytes)) != 0 ||
+           fwx_json_add_owned(obj, "total_bytes",
+                             json_object_new_int64((int64_t)(up_bytes + down_bytes))) != 0
+               ? -1 : 0;
+}
+
+struct json_object *fwx_api_get_exact_app_traffic_stats(struct json_object *req_obj)
+{
+    static const char query_all[] =
+        "SELECT appid, SUM(up_bytes), SUM(down_bytes), "
+        "MAX(CASE WHEN typeof(up_bytes) <> 'integer' OR up_bytes < 0 "
+        "OR typeof(down_bytes) <> 'integer' OR down_bytes < 0 "
+        "THEN 1 ELSE 0 END) FROM traffic_hourly_v2 "
+        "WHERE bucket_start >= ? AND bucket_start < ? GROUP BY appid;";
+    static const char query_mac[] =
+        "SELECT appid, SUM(up_bytes), SUM(down_bytes), "
+        "MAX(CASE WHEN typeof(up_bytes) <> 'integer' OR up_bytes < 0 "
+        "OR typeof(down_bytes) <> 'integer' OR down_bytes < 0 "
+        "THEN 1 ELSE 0 END) FROM traffic_hourly_v2 "
+        "WHERE bucket_start >= ? AND bucket_start < ? "
+        "AND mac COLLATE NOCASE = ? GROUP BY appid;";
+    struct json_object *data_obj = NULL;
+    struct json_object *apps_obj;
+    struct json_object *unknown_obj;
+    struct json_object *totals_obj;
+    struct json_object *reasons_obj;
+    struct json_object *coverage_obj;
+    struct json_object *mac_obj = NULL;
+    app_traffic_aggregate_t *items = NULL;
+    app_traffic_aggregate_t *item;
+    size_t item_count = 0;
+    size_t item_capacity = 0;
+    size_t i;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    int64_t start_time;
+    int64_t end_time;
+    int64_t retention_floor = 0;
+    uint64_t total_up = 0;
+    uint64_t total_down = 0;
+    uint64_t unknown_up = 0;
+    uint64_t unknown_down = 0;
+    char db_path[512];
+    char mac_buf[MAX_MAC_LEN] = {0};
+    const char *mac = NULL;
+    int path_len;
+    int rc;
+    int kernel_incomplete = 0;
+
+    if (!req_obj || !json_object_is_type(req_obj, json_type_object) ||
+        !history_param_present(req_obj, "start_time") ||
+        !history_param_present(req_obj, "end_time") ||
+        parse_history_int64(req_obj, "start_time", 0, 0,
+                            INT64_MAX - 3600, &start_time) != 0 ||
+        parse_history_int64(req_obj, "end_time", 0, 0,
+                            INT64_MAX - 3600, &end_time) != 0 ||
+        start_time >= end_time || start_time % 3600 != 0 || end_time % 3600 != 0)
+        goto ERROR;
+    if (json_object_object_get_ex(req_obj, "mac", &mac_obj)) {
+        const char *raw_mac;
+
+        if (!mac_obj || !json_object_is_type(mac_obj, json_type_string))
+            goto ERROR;
+        raw_mac = json_object_get_string(mac_obj);
+        if (!raw_mac || normalize_history_mac(raw_mac,
+                                               json_object_get_string_len(mac_obj),
+                                               mac_buf, sizeof(mac_buf)) != 0)
+            goto ERROR;
+        if (mac_buf[0] != '\0')
+            mac = mac_buf;
+    }
+
+    /* Legacy appid and pagination fields do not restrict exact device totals. */
+    path_len = snprintf(db_path, sizeof(db_path), "%s/client.db",
+                         get_history_data_root_dir());
+    if (path_len < 0 || (size_t)path_len >= sizeof(db_path))
+        goto ERROR;
+    if (access(db_path, F_OK) == 0) {
+        if (open_client_visit_db(&db) != 0 ||
+            sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL) != SQLITE_OK)
+            goto ERROR;
+        if (sqlite3_prepare_v2(db, mac ? query_mac : query_all,
+                               -1, &stmt, NULL) != SQLITE_OK ||
+            sqlite3_bind_int64(stmt, 1, start_time) != SQLITE_OK ||
+            sqlite3_bind_int64(stmt, 2, end_time) != SQLITE_OK ||
+            (mac && sqlite3_bind_text(stmt, 3, mac, -1, SQLITE_TRANSIENT) != SQLITE_OK))
+            goto ERROR;
+
+        /* SUM must remain integer-valued. SQLite reports integer overflow from
+         * step(); reject REAL promotion and malformed byte values as errors. */
+        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            sqlite3_int64 row_appid = sqlite3_column_int64(stmt, 0);
+            sqlite3_int64 row_up = sqlite3_column_int64(stmt, 1);
+            sqlite3_int64 row_down = sqlite3_column_int64(stmt, 2);
+
+            if (sqlite3_column_type(stmt, 0) != SQLITE_INTEGER ||
+                sqlite3_column_type(stmt, 1) != SQLITE_INTEGER ||
+                sqlite3_column_type(stmt, 2) != SQLITE_INTEGER ||
+                sqlite3_column_int(stmt, 3) != 0 ||
+                row_appid < 0 || row_appid > INT_MAX || row_up < 0 || row_down < 0 ||
+                (uint64_t)row_up > (uint64_t)INT64_MAX - (uint64_t)row_down ||
+                add_app_traffic_direction(&total_up, (uint64_t)row_up) != 0 ||
+                add_app_traffic_direction(&total_down, (uint64_t)row_down) != 0)
+                goto ERROR;
+            if (row_appid == 0) {
+                unknown_up = (uint64_t)row_up;
+                unknown_down = (uint64_t)row_down;
+                continue;
+            }
+            item = find_app_traffic_aggregate(&items, &item_count,
+                                              &item_capacity, (int)row_appid);
+            if (!item)
+                goto ERROR;
+            item->up_bytes = (uint64_t)row_up;
+            item->down_bytes = (uint64_t)row_down;
+        }
+        if (rc != SQLITE_DONE)
+            goto ERROR;
+        rc = sqlite3_finalize(stmt);
+        stmt = NULL;
+        if (rc != SQLITE_OK || sqlite3_prepare_v2(db,
+                "SELECT key, value FROM traffic_hourly_state_v2 "
+                "WHERE key IN ('kernel_incomplete', 'retention_floor');",
+                -1, &stmt, NULL) != SQLITE_OK)
+            goto ERROR;
+        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            const char *key = (const char *)sqlite3_column_text(stmt, 0);
+            sqlite3_int64 state = sqlite3_column_int64(stmt, 1);
+
+            if (!key || sqlite3_column_type(stmt, 0) != SQLITE_TEXT ||
+                sqlite3_column_type(stmt, 1) != SQLITE_INTEGER)
+                goto ERROR;
+            if (strcmp(key, "kernel_incomplete") == 0) {
+                if (state != 0 && state != 1)
+                    goto ERROR;
+                kernel_incomplete = (int)state;
+            } else if (strcmp(key, "retention_floor") == 0) {
+                if (state < 0 || state % 3600 != 0)
+                    goto ERROR;
+                retention_floor = state;
+            } else {
+                goto ERROR;
+            }
+        }
+        if (rc != SQLITE_DONE)
+            goto ERROR;
+        rc = sqlite3_finalize(stmt);
+        stmt = NULL;
+        if (rc != SQLITE_OK || sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK)
+            goto ERROR;
+        if (sqlite3_close(db) != SQLITE_OK)
+            goto ERROR;
+        db = NULL;
+    } else if (errno != ENOENT) {
+        goto ERROR;
+    }
+    if (total_up > (uint64_t)INT64_MAX - total_down)
+        goto ERROR;
+    if (item_count > 1)
+        qsort(items, item_count, sizeof(*items), compare_app_traffic_aggregate);
+
+    data_obj = json_object_new_object();
+    if (!data_obj)
+        goto ERROR;
+    /* Attached children are borrowed below and released with data_obj. */
+    apps_obj = json_object_new_array();
+    if (fwx_json_add_owned(data_obj, "apps", apps_obj) != 0)
+        goto ERROR;
+    unknown_obj = json_object_new_object();
+    if (fwx_json_add_owned(data_obj, "unknown", unknown_obj) != 0)
+        goto ERROR;
+    totals_obj = json_object_new_object();
+    if (fwx_json_add_owned(data_obj, "devices_total", totals_obj) != 0)
+        goto ERROR;
+    reasons_obj = json_object_new_array();
+    if (fwx_json_add_owned(data_obj, "incomplete_reasons", reasons_obj) != 0)
+        goto ERROR;
+    coverage_obj = json_object_new_object();
+    if (fwx_json_add_owned(data_obj, "coverage", coverage_obj) != 0)
+        goto ERROR;
+    if (fwx_json_add_owned(data_obj, "precision", json_object_new_string("exact")) != 0 ||
+        fwx_json_add_owned(data_obj, "bucket", json_object_new_string("utc_hour")) != 0 ||
+        fwx_json_add_owned(data_obj, "scope", json_object_new_string("oaf_late_forward")) != 0 ||
+        fwx_json_add_owned(data_obj, "durability", json_object_new_string("sqlite_committed")) != 0 ||
+        fwx_json_add_owned(data_obj, "delivery", json_object_new_string("commit_ack")) != 0 ||
+        fwx_json_add_owned(data_obj, "start_time", json_object_new_int64(start_time)) != 0 ||
+        fwx_json_add_owned(data_obj, "end_time", json_object_new_int64(end_time)) != 0 ||
+        fwx_json_add_owned(data_obj, "retained_from", json_object_new_int64(retention_floor)) != 0 ||
+        (mac && fwx_json_add_owned(data_obj, "mac", json_object_new_string(mac)) != 0) ||
+        fwx_json_add_owned(data_obj, "complete", json_object_new_boolean(0)) != 0 ||
+        fwx_json_add_owned(data_obj, "coverage_reason", json_object_new_string("coverage_unverified")) != 0 ||
+        fwx_json_array_add_owned(reasons_obj, json_object_new_string("coverage_unverified")) != 0 ||
+        (kernel_incomplete && fwx_json_array_add_owned(reasons_obj,
+            json_object_new_string("kernel_reported_incomplete")) != 0) ||
+        (start_time < retention_floor && fwx_json_array_add_owned(reasons_obj,
+            json_object_new_string("retention_pruned")) != 0) ||
+        fwx_json_add_owned(coverage_obj, "up", json_object_new_string("observed")) != 0 ||
+        fwx_json_add_owned(coverage_obj, "down", json_object_new_string("observed")) != 0 ||
+        fwx_json_add_owned(unknown_obj, "appid", json_object_new_int(0)) != 0 ||
+        add_exact_traffic_bytes(unknown_obj, unknown_up, unknown_down) != 0 ||
+        add_exact_traffic_bytes(totals_obj, total_up, total_down) != 0)
+        goto ERROR;
+    for (i = 0; i < item_count; i++) {
+        struct json_object *app_obj = json_object_new_object();
+        const char *app_name = get_app_name_by_id(items[i].appid);
+
+        if (!app_obj)
+            goto ERROR;
+        if (fwx_json_add_owned(app_obj, "appid", json_object_new_int(items[i].appid)) != 0 ||
+            fwx_json_add_owned(app_obj, "name", json_object_new_string(app_name ? app_name : "")) != 0 ||
+            add_app_icon_missing_flag(app_obj, items[i].appid) != 0 ||
+            add_exact_traffic_bytes(app_obj, items[i].up_bytes, items[i].down_bytes) != 0) {
+            json_object_put(app_obj);
+            goto ERROR;
+        }
+        if (fwx_json_array_add_owned(apps_obj, app_obj) != 0)
+            goto ERROR;
+    }
+    free(items);
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
+
+ERROR:
+    if (stmt)
+        sqlite3_finalize(stmt);
+    if (db) {
+        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
+        sqlite3_close(db);
+    }
+    free(items);
     if (data_obj)
         json_object_put(data_obj);
     return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
@@ -8903,33 +9154,45 @@ static int clear_visit_db_tables(const char *db_path)
         return -1;
     }
 
-    sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL);
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE;", NULL, NULL, NULL) != SQLITE_OK)
+        goto ERROR;
 
     rc = sqlite3_prepare_v2(db,
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+        "AND name NOT IN ('traffic_hourly_batch_v2', 'traffic_hourly_state_v2');",
         -1, &stmt, NULL);
-    if (rc == SQLITE_OK && stmt) {
-        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-            const char *table_name = (const char *)sqlite3_column_text(stmt, 0);
-            if (!table_name || table_name[0] == '\0') {
-                continue;
-            }
+    if (rc != SQLITE_OK)
+        goto ERROR;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *table_name = (const char *)sqlite3_column_text(stmt, 0);
+        char *sql;
 
-            char sql[256] = {0};
-            snprintf(sql, sizeof(sql), "DELETE FROM \"%s\";", table_name);
-            if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-                LOG_WARN("clear_visit_db_tables delete table failed: %s\n", table_name);
-            }
+        if (!table_name || table_name[0] == '\0')
+            goto ERROR;
+        sql = sqlite3_mprintf("DELETE FROM \"%w\";", table_name);
+        if (!sql)
+            goto ERROR;
+        rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
+        sqlite3_free(sql);
+        if (rc != SQLITE_OK) {
+            LOG_WARN("clear_visit_db_tables delete table failed: %s\n", table_name);
+            goto ERROR;
         }
     }
+    if (rc != SQLITE_DONE)
+        goto ERROR;
+    rc = sqlite3_finalize(stmt);
+    stmt = NULL;
+    if (rc != SQLITE_OK || sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK)
+        goto ERROR;
+    return sqlite3_close(db) == SQLITE_OK ? 0 : -1;
 
-    if (stmt) {
+ERROR:
+    if (stmt)
         sqlite3_finalize(stmt);
-    }
-
-    sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
+    sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
     sqlite3_close(db);
-    return 0;
+    return -1;
 }
 
 struct json_object *fwx_api_record_action(struct json_object *req_obj) {
@@ -9007,7 +9270,10 @@ struct json_object *fwx_api_record_action(struct json_object *req_obj) {
         system(cmd);
 
         if (access(history_visit_db_path, F_OK) == 0) {
-            clear_visit_db_tables(history_visit_db_path);
+            if (clear_visit_db_tables(history_visit_db_path) != 0)
+                return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+        } else if (errno != ENOENT) {
+            return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
         }
         
         reset_client_data_base_dir_cache();
@@ -9301,6 +9567,7 @@ struct json_object *fwx_api_get_active_users(struct json_object *req_obj);
 struct json_object *fwx_api_get_active_app_records(struct json_object *req_obj);
 struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj);
 struct json_object *fwx_api_get_app_traffic_stats(struct json_object *req_obj);
+struct json_object *fwx_api_get_exact_app_traffic_stats(struct json_object *req_obj);
 struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj);
 struct json_object *fwx_api_add_filter_rule(struct json_object *req_obj);
 struct json_object *fwx_api_update_filter_rule(struct json_object *req_obj);
@@ -9359,6 +9626,7 @@ static fwx_api_node_t fwx_api_node_list[] = {
     {"get_active_app_records", fwx_api_get_active_app_records, 0, FWX_API_METHOD_GET},
     {"get_app_history_records", fwx_api_get_app_history_records, 0, FWX_API_METHOD_GET},
     {"get_app_traffic_stats", fwx_api_get_app_traffic_stats, 0, FWX_API_METHOD_GET},
+    {"get_exact_app_traffic_stats", fwx_api_get_exact_app_traffic_stats, 0, FWX_API_METHOD_GET},
     {"get_filter_rules", fwx_api_get_filter_rules, 0, FWX_API_METHOD_GET},
     {"add_filter_rule", fwx_api_add_filter_rule, 1, FWX_API_METHOD_POST},
     {"update_filter_rule", fwx_api_update_filter_rule, 1, FWX_API_METHOD_POST},

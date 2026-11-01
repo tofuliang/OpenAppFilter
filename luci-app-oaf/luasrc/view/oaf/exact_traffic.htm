@@ -1,0 +1,370 @@
+<div id="exact-traffic-ledger" class="exact-traffic-ledger">
+    <p class="exact-traffic-hint"><strong><%:Exact · UTC-hour ledger%></strong> — <%:Only packets reaching the OAF late-FORWARD hook are in scope. This is not a router-interface traffic total.%></p>
+    <p class="exact-traffic-hint"><%:Legacy visits and old hourly statistics remain separate; they are not backfilled into this ledger. Unknown means measured, unclassified traffic (appid 0), not missing measurements.%></p>
+    <div class="exact-traffic-controls">
+        <label id="exact-traffic-mac-label" for="exact-traffic-mac"><%:Terminal MAC (optional)%></label>
+        <input id="exact-traffic-mac" class="cbi-input-text" type="text" placeholder="00:11:22:33:44:55" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="exact-traffic-mac-hint">
+        <label for="exact-traffic-start"><%:Start time%> (UTC)</label>
+        <input id="exact-traffic-start" class="cbi-input-text" type="datetime-local" step="3600" required>
+        <label for="exact-traffic-end"><%:End time (exclusive)%> (UTC)</label>
+        <input id="exact-traffic-end" class="cbi-input-text" type="datetime-local" step="3600" required>
+        <button id="exact-traffic-search" type="button" class="cbi-button cbi-button-action"><%:Search%></button>
+        <button id="exact-traffic-reset" type="button" class="cbi-button"><%:Reset%></button>
+    </div>
+    <p id="exact-traffic-mac-hint" class="exact-traffic-hint"><%:Leave MAC empty to include all devices.%></p>
+    <p class="exact-traffic-hint"><%:Enter whole UTC hours, not browser-local time. The interval includes its start and excludes its end. Choose one hour or aggregate several whole hours.%></p>
+    <p id="exact-traffic-range" class="exact-traffic-hint"></p>
+    <div id="exact-traffic-state" class="exact-traffic-state" role="status" aria-live="polite">
+        <span id="exact-traffic-state-message"><%:Open this tab to load exact traffic.%></span>
+        <button id="exact-traffic-retry" type="button" class="cbi-button" hidden><%:Refresh%></button>
+    </div>
+    <ul id="exact-traffic-reasons" class="exact-traffic-hint" hidden></ul>
+    <div id="exact-traffic-results" hidden>
+        <p id="exact-traffic-reconciliation" class="exact-traffic-hint"></p>
+        <p id="exact-traffic-empty" class="exact-traffic-hint" hidden><%:No committed exact traffic is present in this interval. Legacy history is not backfilled; zero committed bytes do not prove complete coverage.%></p>
+        <div class="exact-traffic-scroll">
+            <table class="table cbi-section-table exact-traffic-table">
+                <thead>
+                    <tr class="tr table-titles">
+                        <th class="th"><%:App / reconciliation row%></th>
+                        <th class="th exact-traffic-value"><%:Upstream Traffic%></th>
+                        <th class="th exact-traffic-value"><%:Downstream Traffic%></th>
+                        <th class="th exact-traffic-value"><%:Total Traffic%></th>
+                    </tr>
+                </thead>
+                <tbody id="exact-traffic-apps"></tbody>
+                <tfoot id="exact-traffic-totals"></tfoot>
+            </table>
+        </div>
+        <p class="exact-traffic-hint"><%:Identified App bytes + unknown bytes must equal the selected devices total in both directions. Matching totals prove ledger reconciliation, not complete traffic capture.%></p>
+        <p class="exact-traffic-hint"><%:Values use binary units; the exact byte count is shown below each value. All rows use the same committed UTC-hour facts and selected MAC scope.%></p>
+        <p class="exact-traffic-hint"><%:Shown values are committed to SQLite. Kernel batches are acknowledged only after commit and retried until acknowledged. Uncommitted kernel RAM can still be lost on module unload or power loss; persistent storage is required across router reboots.%></p>
+    </div>
+</div>
+
+<style>
+.exact-traffic-ledger [hidden] { display: none !important; }
+.exact-traffic-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 8px; }
+.exact-traffic-controls input { max-width: 100%; box-sizing: border-box; width: 210px; }
+.exact-traffic-controls input[readonly] { background: var(--background-color-low, #f5f5f5); }
+.exact-traffic-hint { margin: 8px 0; color: var(--text-color-medium, #6b7280); font-size: 0.9em; overflow-wrap: anywhere; }
+.exact-traffic-state { padding: 10px 12px; margin: 10px 0; border: 1px solid var(--border-color-medium, #d1d5db); border-radius: 4px; }
+.exact-traffic-state--incomplete { border-color: #b45309; }
+.exact-traffic-state--error { border-color: #b91c1c; }
+.exact-traffic-state--complete { border-color: #15803d; }
+.exact-traffic-state .cbi-button { margin-left: 8px; }
+.exact-traffic-scroll { max-width: 100%; overflow-x: auto; }
+.exact-traffic-table { width: 100%; min-width: 640px; table-layout: fixed; }
+.exact-traffic-table .th, .exact-traffic-table .td { padding-top: 10px; padding-bottom: 10px; }
+.exact-traffic-table .th:first-child { width: 34%; }
+.exact-traffic-table .td:first-child { overflow-wrap: anywhere; }
+.exact-traffic-value { text-align: right; font-variant-numeric: tabular-nums; }
+.exact-traffic-table .td.exact-traffic-value { white-space: nowrap; }
+.exact-traffic-bytes { display: block; color: var(--text-color-medium, #6b7280); font-size: 0.8em; font-weight: normal; }
+.exact-traffic-table tfoot { border-top: 2px solid var(--border-color-medium, #d1d5db); }
+.exact-traffic-device-total { font-weight: bold; }
+.exact-traffic-app-id { display: block; color: var(--text-color-medium, #6b7280); font-size: 0.8em; }
+</style>
+
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+    var root = document.getElementById('exact-traffic-ledger');
+    if (!root) return;
+    var macInput = document.getElementById('exact-traffic-mac');
+    var startInput = document.getElementById('exact-traffic-start');
+    var endInput = document.getElementById('exact-traffic-end');
+    var searchButton = document.getElementById('exact-traffic-search');
+    var resetButton = document.getElementById('exact-traffic-reset');
+    var retryButton = document.getElementById('exact-traffic-retry');
+    var stateBox = document.getElementById('exact-traffic-state');
+    var stateMessage = document.getElementById('exact-traffic-state-message');
+    var reasonsBox = document.getElementById('exact-traffic-reasons');
+    var results = document.getElementById('exact-traffic-results');
+    var rangeBox = document.getElementById('exact-traffic-range');
+    var appRows = document.getElementById('exact-traffic-apps');
+    var totalRows = document.getElementById('exact-traffic-totals');
+    var xhr = null;
+    var generation = 0;
+    var started = false;
+    var lockedMac = null;
+    var maxSafeInteger = 9007199254740991;
+    var maxTimestamp = 4294967295;
+
+    function isInteger(value) {
+        return typeof value === 'number' && isFinite(value) && Math.floor(value) === value && Math.abs(value) <= maxSafeInteger;
+    }
+
+    function utcInputValue(seconds) {
+        return new Date(seconds * 1000).toISOString().slice(0, 16);
+    }
+
+    function utcLabel(seconds) {
+        return utcInputValue(seconds).replace('T', ' ') + ' UTC';
+    }
+
+    function setDefaultRange() {
+        var now = new Date();
+        startInput.value = utcInputValue(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000);
+        endInput.value = utcInputValue((Math.floor(now.getTime() / 3600000) + 1) * 3600);
+    }
+
+    function setBusy(busy) {
+        searchButton.disabled = busy;
+        resetButton.disabled = busy;
+        retryButton.disabled = busy;
+        root.setAttribute('aria-busy', busy ? 'true' : 'false');
+    }
+
+    function setState(kind, message, retry) {
+        stateBox.className = 'exact-traffic-state exact-traffic-state--' + kind;
+        stateMessage.textContent = message;
+        retryButton.hidden = !retry;
+    }
+
+    function clearResults() {
+        results.hidden = true;
+        reasonsBox.hidden = true;
+        reasonsBox.textContent = '';
+        appRows.textContent = '';
+        totalRows.textContent = '';
+        rangeBox.textContent = '';
+    }
+
+    function normalizeMac(value) {
+        var normalized = String(value || '').trim().toLowerCase();
+        return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(normalized) ? normalized : null;
+    }
+
+    function configureDevice(deviceMac) {
+        if (typeof deviceMac === 'undefined') return true;
+        var normalized = normalizeMac(deviceMac);
+        if (!normalized) {
+            clearResults();
+            setState('error', '<%:A valid device MAC is required. Exact traffic was not loaded.%>', false);
+            return false;
+        }
+        lockedMac = normalized;
+        macInput.value = normalized;
+        macInput.readOnly = true;
+        document.getElementById('exact-traffic-mac-label').textContent = '<%:Terminal MAC%>';
+        document.getElementById('exact-traffic-mac-hint').textContent = '<%:Exact traffic is restricted to this device. Reset keeps the selected device.%>';
+        return true;
+    }
+
+    function parseUtcHour(input) {
+        var value = input.value;
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:00(?::00)?$/.test(value)) return null;
+        var seconds = new Date(value + 'Z').getTime() / 1000;
+        if (!isInteger(seconds) || seconds < 0 || seconds > maxTimestamp || seconds % 3600 !== 0) return null;
+        return utcInputValue(seconds) === value.slice(0, 16) ? seconds : null;
+    }
+
+    function queryFromControls() {
+        var rawMac = macInput.value.trim();
+        var normalized = lockedMac || (rawMac ? normalizeMac(rawMac) : null);
+        if (rawMac && !normalized) throw new Error('<%:Please enter a valid MAC address.%>');
+        var start = parseUtcHour(startInput);
+        var end = parseUtcHour(endInput);
+        if (start === null || end === null) throw new Error('<%:Enter valid whole UTC hours for both start and end.%>');
+        if (start >= end) throw new Error('<%:Start time must be earlier than the exclusive end time.%>');
+        var query = { start_time: start, end_time: end };
+        if (normalized) query.mac = normalized;
+        return query;
+    }
+
+    function readBytes(item) {
+        if (!item || !isInteger(item.up_bytes) || item.up_bytes < 0 || !isInteger(item.down_bytes) || item.down_bytes < 0 ||
+            !isInteger(item.total_bytes) || item.total_bytes < 0 || !isInteger(item.up_bytes + item.down_bytes) ||
+            item.total_bytes !== item.up_bytes + item.down_bytes) {
+            throw new Error('<%:The exact API returned invalid or unsafe byte totals. No legacy fallback is used.%>');
+        }
+        return { up_bytes: item.up_bytes, down_bytes: item.down_bytes, total_bytes: item.total_bytes };
+    }
+
+    function readResponse(response, query) {
+        if (!response || response.precision !== 'exact' || response.bucket !== 'utc_hour' || !Array.isArray(response.apps) ||
+            typeof response.complete !== 'boolean' || response.start_time !== query.start_time || response.end_time !== query.end_time ||
+            response.scope !== 'oaf_late_forward' || response.durability !== 'sqlite_committed' || !response.coverage ||
+            response.coverage.up !== 'observed' || response.coverage.down !== 'observed' ||
+            (query.mac ? normalizeMac(response.mac) !== query.mac : !!response.mac) || !response.unknown || response.unknown.appid !== 0) {
+            throw new Error('<%:The exact API returned an invalid response or a different scope. No legacy fallback is used.%>');
+        }
+        var known = { up_bytes: 0, down_bytes: 0, total_bytes: 0 };
+        var seen = Object.create(null);
+        var apps = response.apps.map(function(item) {
+            if (!item || !isInteger(item.appid) || item.appid <= 0 || seen[item.appid]) {
+                throw new Error('<%:The exact API returned invalid App categories. No legacy fallback is used.%>');
+            }
+            seen[item.appid] = true;
+            var bytes = readBytes(item);
+            ['up_bytes', 'down_bytes', 'total_bytes'].forEach(function(key) {
+                known[key] += bytes[key];
+                if (!isInteger(known[key])) throw new Error('<%:Byte totals exceed browser integer precision; exact reconciliation is unavailable.%>');
+            });
+            return { appid: item.appid, name: typeof item.name === 'string' ? item.name : '', bytes: bytes };
+        });
+        var unknown = readBytes(response.unknown);
+        var devices = readBytes(response.devices_total);
+        var difference = {};
+        ['up_bytes', 'down_bytes', 'total_bytes'].forEach(function(key) {
+            if (!isInteger(known[key] + unknown[key])) throw new Error('<%:Byte totals exceed browser integer precision; exact reconciliation is unavailable.%>');
+            difference[key] = devices[key] - known[key] - unknown[key];
+        });
+        return { source: response, apps: apps, known: known, unknown: unknown, devices: devices, difference: difference };
+    }
+
+    function formatBytes(value) {
+        var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+        var magnitude = Math.abs(value);
+        var unit = 0;
+        while (magnitude >= 1024 && unit < units.length - 1) { magnitude /= 1024; unit++; }
+        return (value < 0 ? '−' : '') + (unit ? magnitude.toFixed(2) : String(magnitude)) + ' ' + units[unit];
+    }
+
+    function appendRow(container, label, bytes, className, appid) {
+        var row = document.createElement('tr');
+        row.className = 'tr' + (className ? ' ' + className : '');
+        var labelCell = row.insertCell(-1);
+        labelCell.className = 'td';
+        labelCell.textContent = label;
+        if (typeof appid !== 'undefined') {
+            var id = document.createElement('span');
+            id.className = 'exact-traffic-app-id';
+            id.textContent = '<%:App ID%>: ' + appid;
+            labelCell.appendChild(id);
+        }
+        ['up_bytes', 'down_bytes', 'total_bytes'].forEach(function(key) {
+            var cell = row.insertCell(-1);
+            cell.className = 'td exact-traffic-value';
+            cell.textContent = formatBytes(bytes[key]);
+            var raw = document.createElement('span');
+            raw.className = 'exact-traffic-bytes';
+            raw.textContent = bytes[key].toLocaleString() + ' B';
+            cell.appendChild(raw);
+        });
+        container.appendChild(row);
+    }
+
+    function reasonText(reason, source) {
+        if (reason === 'coverage_unverified') return '<%:The ledger reconciles committed bytes, but does not yet prove uninterrupted capture for every requested hour.%>';
+        if (reason === 'kernel_reported_incomplete') return '<%:The kernel reports incomplete traffic increments. Committed totals do not establish complete capture.%>';
+        if (reason === 'retention_pruned') {
+            var retained = source.retained_from;
+            return '<%:Some requested hours are outside the retained exact ledger.%>'
+                + (isInteger(retained) && retained >= 0 && retained <= maxTimestamp && retained % 3600 === 0
+                    ? ' <%:Earliest retained hour%>: ' + utcLabel(retained) : '');
+        }
+        return '<%:Incomplete reason%>: ' + reason;
+    }
+
+    function renderResponse(model, query) {
+        var fragment = document.createDocumentFragment();
+        model.apps.forEach(function(app) {
+            appendRow(fragment, app.name || 'App ' + app.appid, app.bytes, '', app.appid);
+        });
+        appRows.appendChild(fragment);
+        appendRow(totalRows, '<%:Identified Apps subtotal%>', model.known);
+        appendRow(totalRows, '<%:Unknown / unclassified%> (appid 0)', model.unknown);
+        appendRow(totalRows, query.mac ? '<%:Selected device total%>' : '<%:All selected devices total%>', model.devices, 'exact-traffic-device-total');
+        appendRow(totalRows, '<%:Reconciliation difference (devices − Apps − unknown)%>', model.difference);
+        var matches = model.difference.up_bytes === 0 && model.difference.down_bytes === 0 && model.difference.total_bytes === 0;
+        document.getElementById('exact-traffic-reconciliation').textContent = matches
+            ? '<%:Reconciled: identified Apps + unknown = selected devices total, upstream and downstream.%>'
+            : '<%:Reconciliation mismatch: the committed App, unknown and device totals do not balance. Do not treat this result as complete.%>';
+        document.getElementById('exact-traffic-empty').hidden = model.devices.total_bytes !== 0 || model.known.total_bytes !== 0 || model.unknown.total_bytes !== 0;
+        rangeBox.textContent = '<%:Range%>: [' + utcLabel(query.start_time) + ', ' + utcLabel(query.end_time) + ') · '
+            + (query.mac ? 'MAC: ' + query.mac : '<%:All devices%>');
+        var reasons = Array.isArray(model.source.incomplete_reasons) ? model.source.incomplete_reasons : [];
+        reasons.forEach(function(reason) {
+            var item = document.createElement('li');
+            item.textContent = reasonText(String(reason), model.source);
+            reasonsBox.appendChild(item);
+        });
+        if (!model.source.complete && !reasons.length) {
+            var incomplete = document.createElement('li');
+            incomplete.textContent = '<%:The backend reports incomplete exact traffic; complete delivery or coverage is not established.%>';
+            reasonsBox.appendChild(incomplete);
+        }
+        var openHour = query.end_time > Math.floor(Date.now() / 3600000) * 3600;
+        if (openHour) {
+            var currentHour = document.createElement('li');
+            currentHour.textContent = '<%:The interval includes unfinished or future UTC hours. Values are a committed snapshot, not final totals for those hours.%>';
+            reasonsBox.appendChild(currentHour);
+        }
+        reasonsBox.hidden = !reasonsBox.children.length;
+        results.hidden = false;
+        if (!matches) {
+            setState('error', '<%:Exact ledger loaded — reconciliation mismatch.%>', true);
+        } else if (!model.source.complete || openHour) {
+            setState('incomplete', '<%:Exact ledger loaded — incomplete. Totals reconcile, but complete capture and delivery are not guaranteed.%>', true);
+        } else {
+            setState('complete', '<%:Exact ledger loaded — complete for the stated observed scope. Totals reconcile.%>', true);
+        }
+    }
+
+    function load() {
+        var current = ++generation;
+        if (xhr) xhr.abort();
+        xhr = null;
+        started = true;
+        clearResults();
+        var query;
+        try { query = queryFromControls(); }
+        catch (error) {
+            setBusy(false);
+            setState('error', error.message, false);
+            return;
+        }
+        setBusy(true);
+        setState('loading', '<%:Loading exact UTC-hour traffic...%>', false);
+        xhr = $.ajax({
+            url: "<%=url('admin/services/oaf/api/app_record/get_exact_app_traffic_stats')%>",
+            data: query,
+            dataType: 'json',
+            cache: false,
+            timeout: 15000
+        }).done(function(response) {
+            if (current !== generation) return;
+            try { renderResponse(readResponse(response, query), query); }
+            catch (error) {
+                clearResults();
+                setState('error', error.message, true);
+            }
+        }).fail(function() {
+            if (current !== generation) return;
+            clearResults();
+            setState('error', '<%:Exact traffic API unavailable or request failed. No exact values are shown, and legacy statistics are not used as fallback.%>', true);
+        }).always(function() {
+            if (current !== generation) return;
+            xhr = null;
+            setBusy(false);
+        });
+    }
+
+    searchButton.addEventListener('click', load);
+    retryButton.addEventListener('click', load);
+    resetButton.addEventListener('click', function() {
+        if (!lockedMac) macInput.value = '';
+        setDefaultRange();
+        load();
+    });
+    [macInput, startInput, endInput].forEach(function(input) {
+        input.addEventListener('keydown', function(event) {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            load();
+        });
+    });
+    setDefaultRange();
+    window.OAFExactTraffic = {
+        ensureLoaded: function(deviceMac) {
+            if (configureDevice(deviceMac) && !started) load();
+        },
+        refresh: function(deviceMac) {
+            if (configureDevice(deviceMac)) load();
+        }
+    };
+})();
+//]]>
+</script>

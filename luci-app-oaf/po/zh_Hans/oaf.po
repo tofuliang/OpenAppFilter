@@ -1990,8 +1990,8 @@ msgstr "访问次数"
 msgid "Overlapping visits are counted in full; values are not exact for the selected time range."
 msgstr "与时间范围相交的访问按完整记录计入；数值不是所选时间范围内的精确流量。"
 
-msgid "A dash means that at least one selected visit has unknown traffic in that direction; it is not zero."
-msgstr "短横线表示所选访问中至少有一条记录该方向流量未知，不代表为零。"
+msgid "≥ shows the known traffic lower bound; Incomplete marks unknown visits. A dash means no measured traffic is available."
+msgstr "≥ 表示已知流量的下限；“不完整”表示存在未知记录。短横线表示没有可用的已测量流量。"
 
 msgid "Start time must not be later than end time."
 msgstr "开始时间不能晚于结束时间。"
@@ -2005,8 +2005,161 @@ msgstr "范围"
 msgid "Whole overlapping visits are counted."
 msgstr "相交的访问按完整记录计入。"
 
-msgid "Unknown traffic is not zero."
-msgstr "未知流量不等于零。"
+msgid "Known traffic is a lower bound; unknown traffic is not zero."
+msgstr "已知流量仅为下限；未知流量不等于零。"
+
+msgid "Incomplete"
+msgstr "不完整"
+
+msgid "Unknown visits"
+msgstr "流量未知记录数"
+
+msgid "Unknown upstream visits"
+msgstr "上行流量未知记录数"
+
+msgid "Unknown downstream visits"
+msgstr "下行流量未知记录数"
 
 msgid "Any time"
 msgstr "任意时间"
+
+msgid "Terminal MAC (optional)"
+msgstr "终端 MAC（可选）"
+
+msgid "Search device name or MAC"
+msgstr "搜索设备名或 MAC"
+
+msgid "Search by device name or MAC, or enter a MAC manually."
+msgstr "可按设备名或 MAC 搜索选择，也可手动输入 MAC。"
+
+msgid "Leave MAC empty to include all devices."
+msgstr "MAC 留空时统计所有设备。"
+
+msgid "Please enter a valid MAC address."
+msgstr "请输入有效的 MAC 地址。"
+
+msgid "All devices"
+msgstr "所有设备"
+
+msgid "Today App Traffic"
+msgstr "今日应用流量"
+
+msgid "Duration uses runtime statistics for today. Traffic counts whole visits overlapping the current browser-local day, including bytes outside that day."
+msgstr "时长为今日运行统计；流量按与浏览器本地今日范围相交的完整访问记录累计，可能包含今日范围以外的流量。"
+
+msgid "Exact Hourly Traffic"
+msgstr "精确整点流量"
+
+msgid "Exact · UTC-hour ledger"
+msgstr "精确流量·UTC整点账本"
+
+msgid "Only packets reaching the OAF late-FORWARD hook are in scope. This is not a router-interface traffic total."
+msgstr "仅统计到达 OAF late-FORWARD 钩子的报文。这不是路由器网卡接口的流量总量。"
+
+msgid "Legacy visits and old hourly statistics remain separate; they are not backfilled into this ledger. Unknown means measured, unclassified traffic (appid 0), not missing measurements."
+msgstr "旧版访问记录和旧小时统计彼此独立，不会回填到此账本。“未知”表示已测量但未分类的流量（appid 0），不是缺少测量数据。"
+
+msgid "End time (exclusive)"
+msgstr "结束时间（不包含）"
+
+msgid "Enter whole UTC hours, not browser-local time. The interval includes its start and excludes its end. Choose one hour or aggregate several whole hours."
+msgstr "请输入完整的 UTC 整点，不要使用浏览器本地时间。时间区间包含起点、不包含终点。可选择一个小时或汇总多个完整小时。"
+
+msgid "Open this tab to load exact traffic."
+msgstr "打开此标签页以加载精确流量。"
+
+msgid "No committed exact traffic is present in this interval. Legacy history is not backfilled; zero committed bytes do not prove complete coverage."
+msgstr "此区间没有已提交的精确流量。旧版历史不会回填；已提交字节数为 0 不代表覆盖完整。"
+
+msgid "App / reconciliation row"
+msgstr "应用 / 对账行"
+
+msgid "Identified App bytes + unknown bytes must equal the selected devices total in both directions. Matching totals prove ledger reconciliation, not complete traffic capture."
+msgstr "已识别应用字节数加未知字节数，必须在上下行两个方向都等于所选设备总量。总量相等只能证明账本对账一致，不代表流量捕获完整。"
+
+msgid "Values use binary units; the exact byte count is shown below each value. All rows use the same committed UTC-hour facts and selected MAC scope."
+msgstr "数值使用二进制单位；每个数值下方显示精确字节数。所有行都使用相同的已提交 UTC 整点事实和所选 MAC 范围。"
+
+msgid "Shown values are committed to SQLite. Kernel batches are acknowledged only after commit and retried until acknowledged. Uncommitted kernel RAM can still be lost on module unload or power loss; persistent storage is required across router reboots."
+msgstr "显示的数值已提交到 SQLite。内核批次仅在提交后确认，并会一直重试直到收到确认。尚未提交的内核 RAM 数据仍可能在模块卸载或断电时丢失；路由器重启后需要使用持久化存储。"
+
+msgid "A valid device MAC is required. Exact traffic was not loaded."
+msgstr "需要有效的设备 MAC，未加载精确流量。"
+
+msgid "Exact traffic is restricted to this device. Reset keeps the selected device."
+msgstr "精确流量已限制为此设备。重置时仍保留所选设备。"
+
+msgid "Enter valid whole UTC hours for both start and end."
+msgstr "请为开始和结束时间输入有效的 UTC 整点。"
+
+msgid "Start time must be earlier than the exclusive end time."
+msgstr "开始时间必须早于不包含的结束时间。"
+
+msgid "The exact API returned invalid or unsafe byte totals. No legacy fallback is used."
+msgstr "精确 API 返回了无效或不安全的字节总量。不使用旧版统计回退。"
+
+msgid "The exact API returned an invalid response or a different scope. No legacy fallback is used."
+msgstr "精确 API 返回了无效响应或不同范围。不使用旧版统计回退。"
+
+msgid "The exact API returned invalid App categories. No legacy fallback is used."
+msgstr "精确 API 返回了无效的应用分类。不使用旧版统计回退。"
+
+msgid "Byte totals exceed browser integer precision; exact reconciliation is unavailable."
+msgstr "字节总量超出浏览器整数精度，无法进行精确对账。"
+
+msgid "The ledger reconciles committed bytes, but does not yet prove uninterrupted capture for every requested hour."
+msgstr "账本中的已提交字节数可以对账一致，但尚不能证明请求的每个小时都连续捕获。"
+
+msgid "The kernel reports incomplete traffic increments. Committed totals do not establish complete capture."
+msgstr "内核报告流量增量不完整。已提交总量不能证明捕获完整。"
+
+msgid "Some requested hours are outside the retained exact ledger."
+msgstr "请求的部分小时不在保留的精确账本范围内。"
+
+msgid "Earliest retained hour"
+msgstr "最早保留整点"
+
+msgid "Incomplete reason"
+msgstr "不完整原因"
+
+msgid "Identified Apps subtotal"
+msgstr "已识别应用小计"
+
+msgid "Unknown / unclassified"
+msgstr "未知 / 未分类"
+
+msgid "Selected device total"
+msgstr "所选设备总量"
+
+msgid "All selected devices total"
+msgstr "所有选定设备总量"
+
+msgid "Reconciliation difference (devices − Apps − unknown)"
+msgstr "对账差额（设备 − 应用 − 未知）"
+
+msgid "Reconciled: identified Apps + unknown = selected devices total, upstream and downstream."
+msgstr "对账一致：上行和下行的已识别应用 + 未知 = 所选设备总量。"
+
+msgid "Reconciliation mismatch: the committed App, unknown and device totals do not balance. Do not treat this result as complete."
+msgstr "对账不一致：已提交的应用、未知和设备总量不平衡。请勿将此结果视为完整。"
+
+msgid "The backend reports incomplete exact traffic; complete delivery or coverage is not established."
+msgstr "后端报告精确流量不完整；尚未确认数据完整交付或覆盖完整。"
+
+msgid "The interval includes unfinished or future UTC hours. Values are a committed snapshot, not final totals for those hours."
+msgstr "此区间包含尚未结束或未来的 UTC 小时。当前数值是已提交的快照，不是这些小时的最终总量。"
+
+msgid "Exact ledger loaded — reconciliation mismatch."
+msgstr "已加载精确账本——对账不一致。"
+
+msgid "Exact ledger loaded — incomplete. Totals reconcile, but complete capture and delivery are not guaranteed."
+msgstr "已加载精确账本——不完整。总量对账一致，但不保证捕获和交付完整。"
+
+msgid "Exact ledger loaded — complete for the stated observed scope. Totals reconcile."
+msgstr "已加载精确账本——在所述观测范围内完整。总量对账一致。"
+
+msgid "Loading exact UTC-hour traffic..."
+msgstr "正在加载精确 UTC 整点流量……"
+
+msgid "Exact traffic API unavailable or request failed. No exact values are shown, and legacy statistics are not used as fallback."
+msgstr "精确流量 API 不可用或请求失败。不会显示精确数值，也不会使用旧版统计作为回退。"
