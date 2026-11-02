@@ -3,7 +3,10 @@
     <p class="exact-traffic-hint"><%:Legacy visits and old hourly statistics remain separate; they are not backfilled into this ledger. Unknown means measured, unclassified traffic (appid 0), not missing measurements.%></p>
     <div class="exact-traffic-controls">
         <label id="exact-traffic-mac-label" for="exact-traffic-mac"><%:Terminal MAC (optional)%></label>
-        <input id="exact-traffic-mac" class="cbi-input-text" type="text" placeholder="00:11:22:33:44:55" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="exact-traffic-mac-hint">
+        <div class="exact-traffic-device">
+            <input id="exact-traffic-mac" class="cbi-input-text" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="exact-traffic-devices" placeholder="<%:Search device name or MAC%>" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="exact-traffic-mac-hint">
+            <div id="exact-traffic-devices" class="exact-traffic-device-options" role="listbox" aria-labelledby="exact-traffic-mac-label" hidden></div>
+        </div>
         <label for="exact-traffic-start"><%:Start time%> (UTC)</label>
         <input id="exact-traffic-start" class="cbi-input-text" type="datetime-local" step="3600" required>
         <label for="exact-traffic-end"><%:End time (exclusive)%> (UTC)</label>
@@ -26,10 +29,10 @@
             <table class="table cbi-section-table exact-traffic-table">
                 <thead>
                     <tr class="tr table-titles">
-                        <th class="th"><%:App / reconciliation row%></th>
-                        <th class="th exact-traffic-value"><%:Upstream Traffic%></th>
-                        <th class="th exact-traffic-value"><%:Downstream Traffic%></th>
-                        <th class="th exact-traffic-value"><%:Total Traffic%></th>
+                        <th class="th exact-traffic-sortable" data-sort="name" aria-sort="none"><%:App / reconciliation row%></th>
+                        <th class="th exact-traffic-value exact-traffic-sortable" data-sort="up_bytes" aria-sort="none"><%:Upstream Traffic%></th>
+                        <th class="th exact-traffic-value exact-traffic-sortable" data-sort="down_bytes" aria-sort="none"><%:Downstream Traffic%></th>
+                        <th class="th exact-traffic-value exact-traffic-sortable" data-sort="total_bytes" aria-sort="descending"><%:Total Traffic%></th>
                     </tr>
                 </thead>
                 <tbody id="exact-traffic-apps"></tbody>
@@ -64,6 +67,37 @@
 .exact-traffic-table tfoot { border-top: 2px solid var(--border-color-medium, #d1d5db); }
 .exact-traffic-device-total { font-weight: bold; }
 .exact-traffic-app-id { display: block; color: var(--text-color-medium, #6b7280); font-size: 0.8em; }
+.exact-traffic-app-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.exact-traffic-app-cell .exact-traffic-app-name { overflow-wrap: anywhere; }
+.exact-traffic-app-cell .exact-traffic-app-id { flex-basis: 100%; margin-left: 30px; }
+.exact-traffic-sortable { cursor: pointer; user-select: none; }
+.exact-traffic-sortable::after { content: ''; margin-left: 4px; opacity: 0.45; font-size: 0.75em; }
+.exact-traffic-sortable[aria-sort="ascending"]::after { content: '▲'; opacity: 1; }
+.exact-traffic-sortable[aria-sort="descending"]::after { content: '▼'; opacity: 1; }
+.exact-traffic-device { position: relative; width: 280px; max-width: 100%; }
+.exact-traffic-controls .exact-traffic-device input { width: 100%; box-sizing: border-box; }
+.exact-traffic-device-options {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    max-height: 240px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color-medium, #d1d5db);
+    border-radius: 4px;
+    background: var(--background-color-high, #ffffff);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.12);
+}
+.exact-traffic-device-options[hidden] { display: none; }
+.exact-traffic-device-option {
+    padding: 8px 10px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+    color: var(--text-color-high, #333);
+}
+.exact-traffic-device-option:hover,
+.exact-traffic-device-option[aria-selected="true"] { background: var(--background-color-medium, #eeeeee); }
 </style>
 
 <script type="text/javascript">
@@ -84,10 +118,16 @@
     var rangeBox = document.getElementById('exact-traffic-range');
     var appRows = document.getElementById('exact-traffic-apps');
     var totalRows = document.getElementById('exact-traffic-totals');
+    var devicesBox = document.getElementById('exact-traffic-devices');
     var xhr = null;
     var generation = 0;
     var started = false;
     var lockedMac = null;
+    var appSort = { key: 'total_bytes', dir: -1 };
+    var lastModel = null;
+    var deviceList = null;
+    var deviceMatches = [];
+    var activeDevice = -1;
     var maxSafeInteger = 9007199254740991;
     var maxTimestamp = 4294967295;
 
@@ -147,9 +187,76 @@
         lockedMac = normalized;
         macInput.value = normalized;
         macInput.readOnly = true;
+        closeDeviceOptions();
         document.getElementById('exact-traffic-mac-label').textContent = '<%:Terminal MAC%>';
         document.getElementById('exact-traffic-mac-hint').textContent = '<%:Exact traffic is restricted to this device. Reset keeps the selected device.%>';
         return true;
+    }
+
+    function closeDeviceOptions() {
+        devicesBox.hidden = true;
+        macInput.setAttribute('aria-expanded', 'false');
+        macInput.removeAttribute('aria-activedescendant');
+        activeDevice = -1;
+    }
+
+    function showDeviceOptions() {
+        if (lockedMac) return;
+        var query = macInput.value.trim().toLowerCase();
+        deviceMatches = (deviceList || []).filter(function(device) {
+            return device.search.indexOf(query) !== -1;
+        });
+        if (!query || '<%:All devices%>'.toLowerCase().indexOf(query) !== -1)
+            deviceMatches.unshift({ mac: '', label: '<%:All devices%>' });
+        devicesBox.textContent = '';
+        deviceMatches.forEach(function(device, index) {
+            var option = document.createElement('div');
+            option.className = 'exact-traffic-device-option';
+            option.id = 'exact-traffic-device-' + index;
+            option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', 'false');
+            option.setAttribute('data-index', String(index));
+            option.textContent = device.label;
+            devicesBox.appendChild(option);
+        });
+        devicesBox.hidden = !deviceMatches.length;
+        macInput.setAttribute('aria-expanded', deviceMatches.length ? 'true' : 'false');
+        macInput.removeAttribute('aria-activedescendant');
+        activeDevice = -1;
+    }
+
+    function chooseDevice(index) {
+        if (index < 0 || index >= deviceMatches.length) return;
+        macInput.value = deviceMatches[index].mac;
+        closeDeviceOptions();
+    }
+
+    function loadDevices() {
+        if (lockedMac || deviceList !== null) return;
+        deviceList = [];
+        $.ajax({
+            url: "<%=url('admin/services/oaf/api/get_all_users')%>",
+            data: { flag: 2, page: 0 },
+            dataType: 'json',
+            timeout: 15000
+        }).done(function(resp) {
+            var users = resp && resp.data && resp.data.list;
+            if (!Array.isArray(users)) return;
+            users.forEach(function(user) {
+                if (!user) return;
+                var mac = String(user.mac || '').trim().toLowerCase();
+                if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(mac)) return;
+                var name = String(user.nickname || '').trim();
+                if (!name) {
+                    name = String(user.hostname || '').trim();
+                    if (name === '*') name = '';
+                }
+                deviceList.push({ mac: mac, label: name ? name + ' (' + mac + ')' : mac,
+                    search: (name + ' ' + mac).toLowerCase() });
+            });
+            if (document.activeElement === macInput) showDeviceOptions();
+        });
+        // Suggestions are optional: failures leave manual MAC entry and all-device queries available.
     }
 
     function parseUtcHour(input) {
@@ -246,6 +353,102 @@
         container.appendChild(row);
     }
 
+    function compareApps(a, b) {
+        var key = appSort.key;
+        var dir = appSort.dir;
+        var av;
+        var bv;
+        if (key === 'name') {
+            av = String(a.name || '').toLowerCase();
+            bv = String(b.name || '').toLowerCase();
+            if (av !== bv) return av < bv ? -dir : dir;
+            return (a.appid - b.appid) * dir;
+        }
+        av = Number(a.bytes[key] || 0);
+        bv = Number(b.bytes[key] || 0);
+        if (av !== bv) return (av - bv) * dir;
+        return (a.appid - b.appid) * dir;
+    }
+
+    function appendAppRow(container, app) {
+        var name = app.name || ('App ' + app.appid);
+        var row = document.createElement('tr');
+        row.className = 'tr';
+        var labelCell = row.insertCell(-1);
+        labelCell.className = 'td';
+        var wrap = document.createElement('div');
+        wrap.className = 'exact-traffic-app-cell';
+        if (window.OAFIcon) {
+            var icon = window.OAFIcon.createAppIcon(String(app.appid), name, '<%=resource%>', { size: '22px', radius: '5px' });
+            if (icon && icon[0]) wrap.appendChild(icon[0]);
+        }
+        var nameSpan = document.createElement('span');
+        nameSpan.className = 'exact-traffic-app-name';
+        nameSpan.textContent = name;
+        wrap.appendChild(nameSpan);
+        var idSpan = document.createElement('span');
+        idSpan.className = 'exact-traffic-app-id';
+        idSpan.textContent = '<%:App ID%>: ' + app.appid;
+        wrap.appendChild(idSpan);
+        labelCell.appendChild(wrap);
+        if (window.OAFIcon && window.OAFIcon.bindFeatureHover) {
+            window.OAFIcon.bindFeatureHover($(wrap), {
+                appid: String(app.appid),
+                name: name,
+                apiUrl: "<%=url('admin/services/oaf/feature/builtin_detail')%>",
+                texts: {
+                    loading: '<%:Loading...%>',
+                    error: '<%:Load failed%>',
+                    empty: '<%:No Data%>',
+                    titleSuffix: '<%:Feature Rules%>'
+                }
+            });
+        }
+        ['up_bytes', 'down_bytes', 'total_bytes'].forEach(function(key) {
+            var cell = row.insertCell(-1);
+            cell.className = 'td exact-traffic-value';
+            cell.textContent = formatBytes(app.bytes[key]);
+            var raw = document.createElement('span');
+            raw.className = 'exact-traffic-bytes';
+            raw.textContent = app.bytes[key].toLocaleString() + ' B';
+            cell.appendChild(raw);
+        });
+        container.appendChild(row);
+    }
+
+    function updateSortHeaders() {
+        Array.prototype.forEach.call(root.querySelectorAll('thead th[data-sort]'), function(th) {
+            var key = th.getAttribute('data-sort');
+            th.setAttribute('aria-sort', key === appSort.key ? (appSort.dir > 0 ? 'ascending' : 'descending') : 'none');
+        });
+    }
+
+    function renderAppRows() {
+        appRows.textContent = '';
+        if (!lastModel) return;
+        var sorted = lastModel.apps.slice().sort(compareApps);
+        var fragment = document.createDocumentFragment();
+        sorted.forEach(function(app) { appendAppRow(fragment, app); });
+        appRows.appendChild(fragment);
+        updateSortHeaders();
+    }
+
+    function bindSortHeaders() {
+        Array.prototype.forEach.call(root.querySelectorAll('thead th[data-sort]'), function(th) {
+            th.addEventListener('click', function() {
+                var key = th.getAttribute('data-sort');
+                if (appSort.key === key) {
+                    appSort.dir = -appSort.dir;
+                } else {
+                    appSort.key = key;
+                    appSort.dir = key === 'name' ? 1 : -1;
+                }
+                renderAppRows();
+            });
+        });
+        updateSortHeaders();
+    }
+
     function reasonText(reason, source) {
         if (reason === 'coverage_unverified') return '<%:The ledger reconciles committed bytes, but does not yet prove uninterrupted capture for every requested hour.%>';
         if (reason === 'kernel_reported_incomplete') return '<%:The kernel reports incomplete traffic increments. Committed totals do not establish complete capture.%>';
@@ -259,11 +462,8 @@
     }
 
     function renderResponse(model, query) {
-        var fragment = document.createDocumentFragment();
-        model.apps.forEach(function(app) {
-            appendRow(fragment, app.name || 'App ' + app.appid, app.bytes, '', app.appid);
-        });
-        appRows.appendChild(fragment);
+        lastModel = model;
+        renderAppRows();
         appendRow(totalRows, '<%:Identified Apps subtotal%>', model.known);
         appendRow(totalRows, '<%:Unknown / unclassified%> (appid 0)', model.unknown);
         appendRow(totalRows, query.mac ? '<%:Selected device total%>' : '<%:All selected devices total%>', model.devices, 'exact-traffic-device-total');
@@ -349,13 +549,49 @@
         setDefaultRange();
         load();
     });
-    [macInput, startInput, endInput].forEach(function(input) {
+    macInput.addEventListener('focus', function() { loadDevices(); showDeviceOptions(); });
+    macInput.addEventListener('click', function() { loadDevices(); showDeviceOptions(); });
+    macInput.addEventListener('input', showDeviceOptions);
+    macInput.addEventListener('blur', closeDeviceOptions);
+    macInput.addEventListener('keydown', function(event) {
+        if (event.isComposing) return;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            if (devicesBox.hidden) showDeviceOptions();
+            if (!deviceMatches.length) return;
+            event.preventDefault();
+            var down = event.key === 'ArrowDown';
+            activeDevice = activeDevice < 0 ? (down ? 0 : deviceMatches.length - 1)
+                : (activeDevice + (down ? 1 : -1) + deviceMatches.length) % deviceMatches.length;
+            Array.prototype.forEach.call(devicesBox.children, function(option, index) {
+                option.setAttribute('aria-selected', index === activeDevice ? 'true' : 'false');
+            });
+            var activeOption = devicesBox.children[activeDevice];
+            if (activeOption) {
+                macInput.setAttribute('aria-activedescendant', activeOption.id);
+                activeOption.scrollIntoView({ block: 'nearest' });
+            }
+        } else if (event.key === 'Enter') {
+            event.preventDefault();
+            if (!devicesBox.hidden && activeDevice >= 0) chooseDevice(activeDevice);
+            else load();
+        } else if (event.key === 'Escape') {
+            if (!devicesBox.hidden) event.preventDefault();
+            closeDeviceOptions();
+        }
+    });
+    devicesBox.addEventListener('mousedown', function(event) { event.preventDefault(); });
+    devicesBox.addEventListener('click', function(event) {
+        var option = event.target.closest('[role="option"]');
+        if (option) chooseDevice(Number(option.getAttribute('data-index')));
+    });
+    [startInput, endInput].forEach(function(input) {
         input.addEventListener('keydown', function(event) {
             if (event.key !== 'Enter') return;
             event.preventDefault();
             load();
         });
     });
+    bindSortHeaders();
     setDefaultRange();
     window.OAFExactTraffic = {
         ensureLoaded: function(deviceMac) {

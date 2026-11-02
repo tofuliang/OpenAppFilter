@@ -2164,17 +2164,9 @@ msgstr "正在加载精确 UTC 整点流量……"
 msgid "Exact traffic API unavailable or request failed. No exact values are shown, and legacy statistics are not used as fallback."
 msgstr "精确流量 API 不可用或请求失败。不会显示精确数值，也不会使用旧版统计作为回退。"
 
-msgid "Legacy"
-msgstr "旧版"
 
-msgid "Today Traffic (Legacy)"
-msgstr "今日流量（旧版）"
 
-msgid "Today Top Apps (Legacy)"
-msgstr "今日热门应用（旧版）"
 
-msgid "Today App Traffic (Legacy)"
-msgstr "今日应用流量（旧版）"
 
 msgid "The custom application list exceeds the 64-application limit; only the first 64 applications are shown. Delete applications to recover."
 msgstr "自定义应用列表超过 64 个上限；仅显示前 64 个应用。请删除部分应用以恢复。"
